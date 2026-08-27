@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import time
+from datetime import timedelta
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -17,6 +18,8 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 
 STATUS_FILE = OUTPUT_DIR / "run_status.json"
 LOCK_FILE = OUTPUT_DIR / ".forecast.lock"
+LAST_RUN_FILE = OUTPUT_DIR / "last_run.txt"
+COOLDOWN_MINUTES = 15
 
 # The processing engine command can later be replaced by Google Cloud Run / Cloud Batch.
 # For V1 it runs forecast_engine.py on the same server.
@@ -71,7 +74,22 @@ def run_forecast(callback: Callable | None = None):
     - LOCK_FILE prevents users from starting duplicate jobs simultaneously.
     """
     if LOCK_FILE.exists():
-        raise RuntimeError("A forecast job is already running.")
+        raise RuntimeError("ระบบกำลังประมวลผลข้อมูลอยู่")
+
+    if LAST_RUN_FILE.exists():
+        try:
+            last_run = datetime.fromisoformat(LAST_RUN_FILE.read_text(encoding="utf-8").strip())
+            elapsed = datetime.now() - last_run
+            cooldown = timedelta(minutes=COOLDOWN_MINUTES)
+            if elapsed < cooldown:
+                remaining = cooldown - elapsed
+                total_seconds = max(0, int(remaining.total_seconds()))
+                minutes, seconds = divmod(total_seconds, 60)
+                raise RuntimeError(
+                    f"สามารถดำเนินการประมวลผลครั้งถัดไปได้ใน {minutes} นาที {seconds} วินาที"
+                )
+        except ValueError:
+            pass
 
     LOCK_FILE.write_text(str(os.getpid()), encoding="utf-8")
 
@@ -125,9 +143,10 @@ def run_forecast(callback: Callable | None = None):
             running=False,
             step=7,
             progress=100,
-            message="Forecast completed successfully.",
+            message="ประมวลผลข้อมูลเสร็จสมบูรณ์",
             error=None,
         )
+        LAST_RUN_FILE.write_text(datetime.now().isoformat(), encoding="utf-8")
 
     except Exception as exc:
         _write_status(
