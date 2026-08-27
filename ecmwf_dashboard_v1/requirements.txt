@@ -1,0 +1,16 @@
+streamlit>=1.42
+numpy
+scipy
+xarray
+cfgrib
+eccodes
+ecmwf-opendata
+matplotlib
+cartopy
+shapely
+requests
+skyfield
+google-api-python-client
+google-auth
+google-auth-httplib2
+google-auth-oauthlib
