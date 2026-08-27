@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import os
 from pathlib import Path
 from drive_writer import ensure_run_folder, upload_file
@@ -906,10 +907,28 @@ print("Export helper ready (Shared Drive streaming mode).", flush=True)
 # The notebook assembled its summary page by drawing every panel a second
 # time into one giant figure of GeoAxes. That is what raised the Cartopy
 # gridliner GEOSException on Streamlit, and it doubled the rendering work.
-# Here the already-rendered panel PNGs are placed into plain image axes, so
-# the tiles are the exact same renders while the suptitle and legends match
-# the notebook layout.
-SUMMARY_MAX_CANVAS_PX = 12000
+#
+# Here the page is composed instead: the already-rendered panel PNGs are
+# tiled with PIL one at a time, and only the title bar and the legend bar
+# are drawn with matplotlib. Output stays at the notebook's full 150 dpi,
+# but peak memory is one tile plus the canvas rather than a 240-inch Agg
+# figure holding every decoded panel at once.
+SUMMARY_DPI = 150
+SUMMARY_MARGIN = 18
+
+
+def _render_strip(width_in, height_in, draw_fn, dpi=SUMMARY_DPI):
+    """Render a full-width header/footer band to an RGB array."""
+    from PIL import Image
+
+    fig = plt.figure(figsize=(width_in, height_in), facecolor='white')
+    draw_fn(fig)
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=dpi, facecolor='white')
+    plt.close(fig)
+    buf.seek(0)
+    with Image.open(buf) as im:
+        return im.convert('RGB').copy()
 
 
 def _make_summary_page(image_files, output_name, subtitle,
@@ -921,74 +940,86 @@ def _make_summary_page(image_files, output_name, subtitle,
         print(f"[warn] {output_name}: no panels to assemble", flush=True)
         return
 
+    sizes = []
+    for f in files:
+        with Image.open(f) as im:
+            sizes.append(im.size)
+    tile_w = max(w for w, _ in sizes)
+    tile_h = max(h for _, h in sizes)
     nrows = (len(files) + ncols - 1) // ncols
 
-    with Image.open(files[0]) as probe:
-        src_w, src_h = probe.size
+    grid_w = ncols * tile_w + (ncols + 1) * SUMMARY_MARGIN
+    grid_h = nrows * tile_h + (nrows + 1) * SUMMARY_MARGIN
+    width_in = grid_w / SUMMARY_DPI
 
-    base_w_in = src_w / 150.0
-    base_h_in = src_h / 150.0
-    fig_w_in = ncols * base_w_in + 0.4
-    fig_h_in = nrows * base_h_in + 1.6
+    def _draw_header(fig):
+        # Only the title belongs in the top band. page_suptitle() also draws
+        # the credit line, which the notebook places at the foot of the page,
+        # so the footer band renders that instead.
+        fig.suptitle(
+            f'ECMWF IFS - {subtitle}\n'
+            f'Model run: {run_ict:%d %b %Y  %H:%M} Local Time '
+            f'(= {run_utc:%Y-%m-%d %H:%M} UTC)',
+            fontsize=10, color='#111111', y=0.88, va='top')
 
-    # The 3-hour set is 24 rows tall. At the notebook's 150 dpi that is a
-    # 31000 px image, which is what exhausts memory on Streamlit Cloud.
-    # Keep the page proportions and lower the output resolution instead.
-    save_dpi = min(150.0, SUMMARY_MAX_CANVAS_PX / fig_h_in)
-    tile_w = max(1, int(base_w_in * save_dpi))
-    tile_h = max(1, int(base_h_in * save_dpi))
+    def _draw_footer(fig):
+        if with_satellite_legend:
+            sats_present = {fp['sat'] for fp in all_footprints}
+            fp_handles = [
+                Line2D([0], [0], color=SAT_STYLE[s]['color'], linewidth=1.5,
+                       label=SAT_STYLE[s]['label'] + ' footprint')
+                for s in SAT_NAMES if s in sats_present and s in SAT_STYLE
+            ]
+            if fp_handles:
+                sat_leg = fig.legend(
+                    handles=fp_handles,
+                    loc='upper center',
+                    bbox_to_anchor=(0.5, 0.95),
+                    ncol=len(fp_handles), fontsize=7.5,
+                    framealpha=0.9, edgecolor='#cccccc',
+                    title='Satellite acquisition footprints',
+                    title_fontsize=7.5,
+                    bbox_transform=fig.transFigure)
+                fig.add_artist(sat_leg)
+        fig.legend(handles=LEGEND_HANDLES,
+                   loc='lower center',
+                   bbox_to_anchor=(0.5, 0.06),
+                   ncol=4,
+                   fontsize=7.5, framealpha=0.9,
+                   edgecolor='#cccccc',
+                   bbox_transform=fig.transFigure)
+        fig.text(0.01, 0.02,
+                 'Data: ECMWF Open Data (CC BY 4.0)  |  '
+                 'Map: Natural Earth  |  Python / Cartopy',
+                 fontsize=5.5, color='#999999', va='bottom')
 
-    fig, axes = plt.subplots(
-        nrows, ncols,
-        figsize=(fig_w_in, fig_h_in),
-        facecolor='white',
-    )
-    axes_flat = np.atleast_1d(axes).ravel()
-    for ax in axes_flat:
-        ax.set_axis_off()
+    header = _render_strip(width_in, 0.85, _draw_header)
+    footer = _render_strip(width_in, 1.35 if with_satellite_legend else 0.95,
+                           _draw_footer)
 
+    canvas = Image.new(
+        'RGB',
+        (grid_w, header.height + grid_h + footer.height),
+        'white')
+    canvas.paste(header, (0, 0))
+
+    y_grid = header.height
     for idx, f in enumerate(files):
+        r, c = divmod(idx, ncols)
         with Image.open(f) as im:
             im = im.convert('RGB')
-            if (tile_w, tile_h) != im.size:
-                im = im.resize((tile_w, tile_h), Image.LANCZOS)
-            axes_flat[idx].imshow(np.asarray(im))
+            x = SUMMARY_MARGIN + c * (tile_w + SUMMARY_MARGIN) \
+                + (tile_w - im.width) // 2
+            y = y_grid + SUMMARY_MARGIN + r * (tile_h + SUMMARY_MARGIN) \
+                + (tile_h - im.height) // 2
+            canvas.paste(im, (x, y))
 
-    page_suptitle(fig, run_ict, run_utc, subtitle)
-    fig.tight_layout(rect=[0, 0.06, 1, 0.975])
-
-    fig.legend(handles=LEGEND_HANDLES,
-               loc='lower center',
-               bbox_to_anchor=(0.5, 0.0),
-               ncol=4,
-               fontsize=7.5, framealpha=0.9,
-               edgecolor='#cccccc',
-               bbox_transform=fig.transFigure)
-
-    if with_satellite_legend:
-        sats_present = {fp['sat'] for fp in all_footprints}
-        fp_handles = [
-            Line2D([0], [0], color=SAT_STYLE[s]['color'], linewidth=1.5,
-                   label=SAT_STYLE[s]['label'] + ' footprint')
-            for s in SAT_NAMES if s in sats_present and s in SAT_STYLE
-        ]
-        if fp_handles:
-            sat_leg = fig.legend(
-                handles=fp_handles,
-                loc='lower center',
-                bbox_to_anchor=(0.5, 0.028),
-                ncol=len(fp_handles), fontsize=7.5,
-                framealpha=0.9, edgecolor='#cccccc',
-                title='Satellite acquisition footprints',
-                title_fontsize=7.5,
-                bbox_transform=fig.transFigure)
-            fig.add_artist(sat_leg)
-
-    fig.savefig(output_name, dpi=save_dpi,
-                bbox_inches='tight', facecolor='white')
-    plt.close(fig)
-    print(f"Saved: {output_name} ({nrows}x{ncols} @ {save_dpi:.0f} dpi)",
+    canvas.paste(footer, (0, header.height + grid_h))
+    canvas.save(output_name, dpi=(SUMMARY_DPI, SUMMARY_DPI))
+    print(f"Saved: {output_name} "
+          f"({canvas.width}x{canvas.height} px @ {SUMMARY_DPI} dpi)",
           flush=True)
+    canvas.close()
 
 
 status(5, 58, "Processing 24-hour accumulated rainfall...")
