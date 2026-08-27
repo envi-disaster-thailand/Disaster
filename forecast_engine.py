@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-import streamlit as st
 from drive_writer import ensure_run_folder, upload_file
+from drive_writer import _secret as _drive_secret
 
 import matplotlib
 matplotlib.use("Agg")
@@ -722,6 +722,14 @@ print(f'Done: {len(ground_tracks)} satellite(s) have tracks.')
 
 
 # @title
+# Built once and reused by every panel. Creating a NaturalEarthFeature per
+# panel re-reads the shapefile ~120 times per run and leaks memory.
+LAND_FEATURE = cfeature.NaturalEarthFeature(
+    'physical', 'land', '50m',
+    facecolor=LAND_COLOR, edgecolor='none')
+COASTLINE_FEATURE = cfeature.COASTLINE.with_scale('50m')
+
+
 def draw_panel(ax, data, rain_levels, rain_colors, title_line1, title_line2, stat_label,
                footprints=None, ground_tracks=None):
     cmap = mcolors.ListedColormap(rain_colors)
@@ -731,10 +739,7 @@ def draw_panel(ax, data, rain_levels, rain_colors, title_line1, title_line2, sta
     ax.set_extent([LON_MIN, LON_MAX, LAT_MIN, LAT_MAX],
                   crs=ccrs.PlateCarree())
 
-    land_feat = cfeature.NaturalEarthFeature(
-        'physical', 'land', '50m',
-        facecolor=LAND_COLOR, edgecolor='none')
-    ax.add_feature(land_feat, zorder=1)
+    ax.add_feature(LAND_FEATURE, zorder=1)
 
     smooth = gaussian_filter(data, sigma=SMOOTH_SIGMA)
     masked = np.where(smooth < rain_levels[0], np.nan, smooth)
@@ -766,7 +771,7 @@ def draw_panel(ax, data, rain_levels, rain_colors, title_line1, title_line2, sta
                           facecolor='none', edgecolor='#111111',
                           linewidth=1.8, zorder=6)
 
-    ax.add_feature(cfeature.COASTLINE.with_scale('50m'),
+    ax.add_feature(COASTLINE_FEATURE,
                    edgecolor='#555555', linewidth=0.5, zorder=7)
 
     gl = ax.gridlines(draw_labels=True, linewidth=0.3,
@@ -779,6 +784,7 @@ def draw_panel(ax, data, rain_levels, rain_colors, title_line1, title_line2, sta
     gl.yformatter = LATITUDE_FORMATTER
     gl.xlabel_style = {'size': 6.5, 'color': '#333333'}
     gl.ylabel_style = {'size': 6.5, 'color': '#333333'}
+    ax._panel_gridliner = gl
 
     ax.set_title(f'{title_line1}\n{title_line2}',
                  fontsize=8, color='#111111', pad=3, loc='center')
@@ -916,6 +922,57 @@ def draw_panel(ax, data, rain_levels, rain_colors, title_line1, title_line2, sta
     return cf
 
 
+def _disable_gridline_labels(ax):
+    gl = getattr(ax, '_panel_gridliner', None)
+    if gl is None:
+        return False
+    gl.top_labels = False
+    gl.bottom_labels = False
+    gl.left_labels = False
+    gl.right_labels = False
+    gl.geo_labels = False
+    gl.inline_labels = False
+    gl.x_inline = False
+    gl.y_inline = False
+    gl._drawn = False
+    for label in getattr(gl, '_all_labels', []):
+        label.set_visible(False)
+    return True
+
+
+def save_map(fig, ax, filename, dpi=150):
+    """Save one map, tolerating the Cartopy gridliner boundary failure.
+
+    Cartopy builds a shapely Polygon from the geo spine to place gridline
+    labels. On some matplotlib/shapely combinations that polygon comes out
+    invalid and raises GEOSException during draw, which would otherwise kill
+    the whole run. Retry once with the labels turned off.
+    """
+    try:
+        fig.savefig(filename, dpi=dpi, bbox_inches='tight', facecolor='white')
+        return True
+    except Exception as exc:
+        print(f'[warn] {filename}: {type(exc).__name__}: {exc}', flush=True)
+
+    if _disable_gridline_labels(ax):
+        try:
+            fig.savefig(filename, dpi=dpi,
+                        bbox_inches='tight', facecolor='white')
+            print(f'[warn] {filename}: saved without gridline labels',
+                  flush=True)
+            return True
+        except Exception as exc:
+            print(f'[warn] {filename}: retry failed: {exc}', flush=True)
+
+    try:
+        fig.savefig(filename, dpi=dpi, facecolor='white')
+        print(f'[warn] {filename}: saved without tight bbox', flush=True)
+        return True
+    except Exception as exc:
+        print(f'[error] {filename}: skipped: {exc}', flush=True)
+        return False
+
+
 SAT_LEGEND_HANDLES = [
     Line2D([0], [0], color=SAT_STYLE[s]['color'], linewidth=1.5,
            label=SAT_STYLE[s]['label'] + ' footprint')
@@ -951,7 +1008,7 @@ print('Helper functions ready.')
 # Preserve the original Shared Drive structure:
 # New-Disaster-Water/Colab_ECMWF_Export/PNG/YYYY-MM-DD_HHMM_ICT
 
-DRIVE_PNG_PARENT_ID = str(st.secrets.get("GOOGLE_DRIVE_FOLDER_ID", "")).strip()
+DRIVE_PNG_PARENT_ID = _drive_secret("GOOGLE_DRIVE_FOLDER_ID")
 if not DRIVE_PNG_PARENT_ID:
     raise RuntimeError(
         "GOOGLE_DRIVE_FOLDER_ID is missing. It must point to the existing PNG folder."
@@ -1075,11 +1132,10 @@ for idx, p in enumerate(panels_24h):
         footprints=p['fps'],
         ground_tracks=p['gts'])
 
-    _fig_p.savefig(
-        p['fn'], dpi=150,
-        bbox_inches='tight', facecolor='white')
+    save_map(_fig_p, _ax_p, p['fn'], dpi=150)
     plt.close(_fig_p)
-    _upload(p['fn'], remove_after=False)
+    if Path(p['fn']).exists():
+        _upload(p['fn'], remove_after=False)
 
 _make_contact_sheet(
     [p['fn'] for p in panels_24h],
@@ -1138,11 +1194,10 @@ for idx, p in enumerate(panels_12h):
         RAIN_LEVELS_12H, RAIN_COLORS_12H,
         tl1, tl2, '')
 
-    _fig_p.savefig(
-        p['fn'], dpi=150,
-        bbox_inches='tight', facecolor='white')
+    save_map(_fig_p, _ax_p, p['fn'], dpi=150)
     plt.close(_fig_p)
-    _upload(p['fn'], remove_after=False)
+    if Path(p['fn']).exists():
+        _upload(p['fn'], remove_after=False)
 
 _make_contact_sheet(
     [p['fn'] for p in panels_12h],
@@ -1202,11 +1257,10 @@ for idx, p in enumerate(panels_6h):
         RAIN_LEVELS_6H, RAIN_COLORS_6H,
         tl1, tl2, '')
 
-    _fig_p.savefig(
-        p['fn'], dpi=150,
-        bbox_inches='tight', facecolor='white')
+    save_map(_fig_p, _ax_p, p['fn'], dpi=150)
     plt.close(_fig_p)
-    _upload(p['fn'], remove_after=False)
+    if Path(p['fn']).exists():
+        _upload(p['fn'], remove_after=False)
 
 _make_contact_sheet(
     [p['fn'] for p in panels_6h],
@@ -1266,11 +1320,10 @@ for idx, p in enumerate(panels_3h):
         RAIN_LEVELS_3H, RAIN_COLORS_3H,
         tl1, tl2, '')
 
-    _fig_p.savefig(
-        p['fn'], dpi=150,
-        bbox_inches='tight', facecolor='white')
+    save_map(_fig_p, _ax_p, p['fn'], dpi=150)
     plt.close(_fig_p)
-    _upload(p['fn'], remove_after=False)
+    if Path(p['fn']).exists():
+        _upload(p['fn'], remove_after=False)
 
 _make_contact_sheet(
     [p['fn'] for p in panels_3h],

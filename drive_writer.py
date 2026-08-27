@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import mimetypes
+import os
 from pathlib import Path
 
-import streamlit as st
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
@@ -12,7 +12,23 @@ DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
 
 
 def _secret(name: str) -> str:
-    value = st.secrets.get(name, "")
+    """Environment first, Streamlit secrets second.
+
+    forecast_engine.py runs as a plain python subprocess with a changed
+    working directory, so st.secrets is not reliably resolvable there.
+    forecast_runner.py forwards the values through the environment instead.
+    """
+    value = os.environ.get(name, "")
+    if value:
+        return value.strip()
+
+    try:
+        import streamlit as st
+
+        value = st.secrets.get(name, "")
+    except Exception:
+        value = ""
+
     return "" if value is None else str(value).strip()
 
 

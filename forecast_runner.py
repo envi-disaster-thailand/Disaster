@@ -105,6 +105,23 @@ def run_forecast(callback: Callable | None = None):
         env = os.environ.copy()
         env["DASHBOARD_OUTPUT_DIR"] = str(OUTPUT_DIR)
 
+        # The engine runs as a plain python subprocess, so it cannot rely on
+        # st.secrets resolving. Forward the credentials explicitly.
+        for key in (
+            "GOOGLE_CLIENT_ID",
+            "GOOGLE_CLIENT_SECRET",
+            "GOOGLE_REFRESH_TOKEN",
+            "GOOGLE_DRIVE_FOLDER_ID",
+        ):
+            try:
+                import streamlit as st
+
+                value = st.secrets.get(key, "")
+            except Exception:
+                value = ""
+            if value:
+                env[key] = str(value).strip()
+
         # forecast_engine.py prints status markers:
         # STATUS|<step>|<progress>|<message>
         process = subprocess.Popen(
