@@ -139,7 +139,7 @@ def display_local_maps() -> bool:
         label_visibility="collapsed",
         key="local_days",
     )
-    st.image(str(images[selected]), use_container_width=True)
+    st.image(str(images[selected]), width='stretch')
     return True
 
 
@@ -172,7 +172,7 @@ def display_private_drive_maps() -> bool:
         image_bytes = download_drive_file(metadata["id"])
         st.image(
             image_bytes,
-            use_container_width=True,
+            width='stretch',
             caption=metadata.get("name", ""),
         )
     except Exception as exc:
@@ -208,7 +208,7 @@ with left:
     run_clicked = st.button(
         "▶ ดำเนินการประมวลผลข้อมูล",
         type="primary",
-        use_container_width=True,
+        width='stretch',
         disabled=disable_run,
     )
 
@@ -252,11 +252,11 @@ st.caption(
 )
 
 # Priority:
-# 1) Private Google Drive latest forecast set
-# 2) Local runtime maps generated during the current Streamlit session
-shown = display_private_drive_maps()
+# 1) Local runtime maps from the latest web run
+# 2) Private Google Drive maps when there is no local run in this instance
+shown = display_local_maps()
 if not shown:
-    shown = display_local_maps()
+    shown = display_private_drive_maps()
 
 if not shown:
     st.info(

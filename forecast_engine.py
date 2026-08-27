@@ -1,18 +1,21 @@
 from __future__ import annotations
+
 import os
 from pathlib import Path
+
 import matplotlib
 matplotlib.use("Agg")
 
+# Dashboard runtime output directory only.
+# Data sources and processing logic below are taken from the original notebook.
 OUTPUT_DIR = Path(os.getenv("DASHBOARD_OUTPUT_DIR", "outputs")).resolve()
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 os.chdir(OUTPUT_DIR)
 
-def status(step:int, progress:int, message:str):
+def status(step: int, progress: int, message: str):
     print(f"STATUS|{step}|{progress}|{message}", flush=True)
 
-status(1,5,"Preparing system...")
-
+status(1, 5, "Preparing system...")
 
 import os, warnings
 warnings.filterwarnings('ignore')
@@ -33,6 +36,7 @@ from cartopy.mpl.gridliner import LONGITUDE_FORMATTER, LATITUDE_FORMATTER
 
 from ecmwf.opendata import Client
 from datetime import datetime, timedelta
+
 
 GRIB_FILE_24H = 'tp_thailand_24h.grib2'
 GRIB_FILE_12H = 'tp_thailand_12h.grib2'
@@ -129,12 +133,7 @@ SHARED_DRIVE_PATH = (
 
 
 
-# Override Colab-only export path; dashboard writes locally and uploads via Drive API.
-SHARED_DRIVE_PATH = str(OUTPUT_DIR)
-
-
-status(2,15,"Downloading ECMWF forecast...")
-
+status(2, 15, "Downloading ECMWF forecast...")
 
 # @title
 client = Client(source='ecmwf')
@@ -182,8 +181,8 @@ client.retrieve(
 )
 print(f'3h file size     : {os.path.getsize(GRIB_FILE_3H)/1e6:.1f} MB')
 
-status(3,30,"Reading and preparing rainfall data...")
 
+status(3, 30, "Reading and preparing rainfall data...")
 
 def load_grib(path):
     ds = xr.open_dataset(path, engine='cfgrib',
@@ -230,6 +229,7 @@ print(f'12h steps : {hours_12h}')
 print(f'6h steps  : {hours_6h}')
 print(f'3h steps  : {hours_3h}')
 
+
 shpfile = shpreader.natural_earth(
     resolution='50m', category='cultural', name='admin_0_countries')
 reader_c = shpreader.Reader(shpfile)
@@ -259,6 +259,7 @@ print(f'Thailand border    : {thailand_geom is not None}')
 print(f'Neighbor countries : {len(neighbor_geoms)}')
 print(f'Thailand provinces : {len(province_geoms)}')
 
+
 from shapely.geometry import Point
 from shapely.prepared import prep
 
@@ -281,15 +282,13 @@ if thailand_mask is not None:
 else:
     print('Thailand geometry not available; mask skipped.')
 
-status(4,42,"Loading satellite acquisition plans...")
 
-
-import urllib.parse
-
+status(4, 42, "Loading satellite acquisition plans...")
 
 # @title
 import json as _json
 import urllib.request
+import urllib.parse
 from collections import defaultdict
 from datetime import datetime as _dt
 from shapely.geometry import shape as _shape, box as _box
@@ -427,6 +426,7 @@ all_footprints = collect_footprints(
 def footprints_in_window(t0_ict, t1_ict):
     return [f for f in all_footprints
             if t0_ict <= f['t_ict'] < t1_ict]
+
 
 # @title
 import re
@@ -596,8 +596,8 @@ if _s1_missing:
 else:
     print('GISTDA has both Sentinel-1C and Sentinel-1D. ESA fallback not needed.')
 
-status(4,50,"Computing satellite ground tracks...")
 
+status(4, 50, "Computing satellite ground tracks...")
 
 # @title
 from sgp4.api import Satrec as _Satrec, jday as _jday
@@ -703,6 +703,7 @@ ground_tracks = fetch_ground_tracks(
     SAT_NAMES, SAT_NORAD, track_start, track_end,
     step_sec=TRACK_STEP_SEC)
 print(f'Done: {len(ground_tracks)} satellite(s) have tracks.')
+
 
 # @title
 def draw_panel(ax, data, rain_levels, rain_colors, title_line1, title_line2, stat_label,
@@ -929,82 +930,62 @@ def page_suptitle(fig, run_ict, run_utc, subtitle):
 print('Helper functions ready.')
 
 
-# ---------------- Google Drive backend export ----------------
-import mimetypes as _mimetypes
 
-_export_folder_id = None
-
-def _drive_service():
-    folder_id = os.getenv('GOOGLE_DRIVE_FOLDER_ID', '').strip()
-    if not folder_id:
-        return None
-    try:
-        from google.oauth2 import service_account
-        from googleapiclient.discovery import build
-        import json as _json2
-        raw = os.getenv('GOOGLE_SERVICE_ACCOUNT_JSON', '').strip()
-        if raw:
-            info = _json2.loads(raw)
-            creds = service_account.Credentials.from_service_account_info(
-                info, scopes=['https://www.googleapis.com/auth/drive'])
-        else:
-            cred_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS', '').strip()
-            if not cred_path:
-                print('[export] Drive credentials not configured; local files retained.')
-                return None
-            creds = service_account.Credentials.from_service_account_file(
-                cred_path, scopes=['https://www.googleapis.com/auth/drive'])
-        return build('drive', 'v3', credentials=creds, cache_discovery=False)
-    except Exception as exc:
-        print(f'[export] Google Drive unavailable: {exc}')
-        return None
-
-def _get_dest(run_ict):
-    global _export_folder_id
-    if _export_folder_id:
-        return _export_folder_id
-    parent = os.getenv('GOOGLE_DRIVE_FOLDER_ID', '').strip()
-    svc = _drive_service()
-    if not parent or svc is None:
-        return None
-    name = run_ict.strftime('%Y-%m-%d_%H%M_ICT')
-    meta = {'name': name, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [parent]}
-    obj = svc.files().create(body=meta, fields='id', supportsAllDrives=True).execute()
-    _export_folder_id = obj['id']
-    print(f'[export] Drive run folder created: {name}')
-    return _export_folder_id
-
-def _upload_file(fname, folder_id):
-    if not folder_id:
-        return
-    path = Path(fname)
-    if not path.exists():
-        print(f'  SKIP {fname}')
-        return
-    from googleapiclient.http import MediaFileUpload
-    svc = _drive_service()
-    if svc is None:
-        return
-    mime = _mimetypes.guess_type(str(path))[0] or 'application/octet-stream'
-    media = MediaFileUpload(str(path), mimetype=mime, resumable=True)
-    meta = {'name': path.name, 'parents': [folder_id]}
-    svc.files().create(body=meta, media_body=media, fields='id', supportsAllDrives=True).execute()
-    print(f'  OK   {path.name} -> Google Drive')
+# ---------------- Dashboard export helper ----------------
+# The current Google OAuth scope is drive.readonly.
+# Results are therefore kept in OUTPUT_DIR.  The public dashboard can read
+# private Drive products through drive_reader.py, without changing the
+# original data-retrieval logic or silently broadening Google permissions.
 
 def _export(panels, summary_src, run_ict):
-    folder_id = _get_dest(run_ict)
-    if not folder_id:
-        print('[export] Google Drive not configured; products remain in local output directory.')
+    print("[export] Local products ready in dashboard output directory.")
+    print("[export] Private Google Drive is currently configured read-only; upload skipped.")
+
+print("Export helper ready (read-only Google Drive mode).")
+
+
+def _make_contact_sheet(image_files, output_name, ncols=2, margin=18):
+    """Build summary PNG from already-rendered original daily maps.
+
+    This avoids re-rendering many Cartopy GeoAxes in one giant figure.
+    The individual maps themselves are still produced by the original
+    draw_panel() function from the notebook.
+    """
+    from PIL import Image
+
+    files = [Path(f) for f in image_files if Path(f).exists()]
+    if not files:
         return
-    _upload_file(summary_src, folder_id)
-    for p in panels:
-        if 'fn' in p:
-            _upload_file(p['fn'], folder_id)
 
-print('Export helper ready (server-side Google Drive credentials).')
+    imgs = [Image.open(f).convert("RGB") for f in files]
+    max_w = max(im.width for im in imgs)
+    max_h = max(im.height for im in imgs)
+    nrows = (len(imgs) + ncols - 1) // ncols
+
+    canvas = Image.new(
+        "RGB",
+        (
+            ncols * max_w + (ncols + 1) * margin,
+            nrows * max_h + (nrows + 1) * margin,
+        ),
+        "white",
+    )
+
+    for i, im in enumerate(imgs):
+        r, c = divmod(i, ncols)
+        x = margin + c * max_w + (max_w - im.width) // 2
+        y = margin + r * max_h + (max_h - im.height) // 2
+        canvas.paste(im, (x, y))
+
+    canvas.save(output_name, dpi=(150, 150))
+    for im in imgs:
+        im.close()
+
+    print(f"Saved: {output_name}")
 
 
-status(5,58,"Processing 24-hour accumulated rainfall...")
+
+status(5, 58, "Processing 24-hour accumulated rainfall...")
 # @title
 panels_24h = []
 for i in range(len(hours_24h)):
@@ -1028,97 +1009,51 @@ for i in range(len(hours_24h)):
         'gts': ground_tracks, 'fn': _fn,
     })
 
-n     = len(panels_24h)
-ncols = 2
-nrows = int(np.ceil(n / ncols))
+
 
 lat_span = LAT_MAX - LAT_MIN
 lon_span = LON_MAX - LON_MIN
 cell_w   = 6.2
 cell_h   = cell_w * (lat_span / lon_span) + 1.8
 
-fig_a, axes_a = plt.subplots(
-    nrows, ncols,
-    figsize=(cell_w * ncols + 0.4, cell_h * nrows + 1.6),
-    subplot_kw={'projection': ccrs.PlateCarree()},
-    facecolor='white',
-)
-axes_flat = axes_a.flatten()
-
 for idx, p in enumerate(panels_24h):
-    status(6, 65 + int(((idx+1)/max(len(panels_24h),1))*20), f"Generating Day {p['day']} map with satellite footprints and ground tracks...")
-    ax = axes_flat[idx]
+    status(
+        6,
+        65 + int(((idx + 1) / max(len(panels_24h), 1)) * 20),
+        f"Generating Day {p['day']} map with satellite footprints and ground tracks..."
+    )
     tl1 = (f"Day {p['day']}  —  "
            f"{p['t0']:%d %b %H:%M} to {p['t1']:%d %b %H:%M}  "
            f"Local Time (ICT)")
     tl2 = f"+{p['h0']}h to +{p['h1']}h  |  24-hour accumulated"
-    vmax = np.nanmax(p['data'])
-    draw_panel(ax, p['data'],
-               RAIN_LEVELS_24H, RAIN_COLORS_24H,
-               tl1, tl2, '',
-               footprints=p['fps'],
-               ground_tracks=p['gts'])
+
     _fig_p, _ax_p = plt.subplots(
         1, 1, figsize=(cell_w, cell_h),
         subplot_kw={'projection': ccrs.PlateCarree()},
         facecolor='white')
-    draw_panel(_ax_p, p['data'],
-               RAIN_LEVELS_24H, RAIN_COLORS_24H,
-               tl1, tl2, '',
-               footprints=p['fps'],
-               ground_tracks=p['gts'])
-    _fig_p.savefig(p['fn'], dpi=150,
-                   bbox_inches='tight', facecolor='white')
+
+    draw_panel(
+        _ax_p, p['data'],
+        RAIN_LEVELS_24H, RAIN_COLORS_24H,
+        tl1, tl2, '',
+        footprints=p['fps'],
+        ground_tracks=p['gts'])
+
+    _fig_p.savefig(
+        p['fn'], dpi=150,
+        bbox_inches='tight', facecolor='white')
     plt.close(_fig_p)
 
-for j in range(idx + 1, len(axes_flat)):
-    axes_flat[j].set_visible(False)
-
-page_suptitle(fig_a, run_ict, run_utc,
-              '24-Hour Accumulated Precipitation Forecast (Day 1 – Day 10)')
-
-plt.tight_layout(rect=[0, 0.06, 1, 0.975])
-fig_a.legend(handles=LEGEND_HANDLES,
-             loc='lower center',
-             bbox_to_anchor=(0.5, 0.0),
-             ncol=4,
-             fontsize=7.5, framealpha=0.9,
-             edgecolor='#cccccc',
-             bbox_transform=fig_a.transFigure)
-_sats_present = {fp["sat"] for fp in all_footprints}
-_fp_handles = [
-    Line2D([0], [0], color=SAT_STYLE[s]["color"],
-           linewidth=1.5,
-           label=SAT_STYLE[s]["label"] + " footprint")
-    for s in SAT_NAMES if s in _sats_present and s in SAT_STYLE
-]
-_tr_handles = [
-    Line2D([0], [0],
-           color=TRACK_STYLE[s]['color'], linewidth=1.0,
-           linestyle=(0, TRACK_STYLE[s]['dash']),
-           label=SAT_STYLE[s]['label'] + ' track')
-    for s in SAT_NAMES if s in ground_tracks
-]
-_all_sat_handles = _fp_handles + _tr_handles
-if _all_sat_handles:
-    sat_leg = fig_a.legend(
-        handles=_all_sat_handles,
-        loc='lower center',
-        bbox_to_anchor=(0.5, 0.028),
-        ncol=len(_all_sat_handles), fontsize=7.5,
-        framealpha=0.9, edgecolor='#cccccc',
-        title='Satellite passes & ground tracks',
-        title_fontsize=7.5,
-        bbox_transform=fig_a.transFigure)
-    fig_a.add_artist(sat_leg)
-plt.savefig('ecmwf_24h_accumulated.png',
-            dpi=150, bbox_inches='tight', facecolor='white')
-print('Saved: ecmwf_24h_accumulated.png')
-plt.close(fig_a)
+_make_contact_sheet(
+    [p['fn'] for p in panels_24h],
+    'ecmwf_24h_accumulated.png',
+    ncols=2,
+)
 _export(panels_24h, 'ecmwf_24h_accumulated.png', run_ict)
 
 
-status(6,88,"Generating additional 12-hour products for Google Drive...")
+
+status(6, 88, "Generating additional 12-hour products...")
 # @title
 panels_12h = []
 for i in range(1, len(hours_12h)):
@@ -1139,59 +1074,43 @@ for i in range(1, len(hours_12h)):
         't0': t0_ict, 't1': t1_ict, 'fn': _fn,
     })
 
-n     = len(panels_12h)
-ncols = 2
-nrows = int(np.ceil(n / ncols))
 
-fig_b, axes_b = plt.subplots(
-    nrows, ncols,
-    figsize=(cell_w * ncols + 0.4, cell_h * nrows + 1.6),
-    subplot_kw={'projection': ccrs.PlateCarree()},
-    facecolor='white',
-)
-axes_flat_b = axes_b.flatten()
+
+lat_span = LAT_MAX - LAT_MIN
+lon_span = LON_MAX - LON_MIN
+cell_w   = 6.2
+cell_h   = cell_w * (lat_span / lon_span) + 1.8
 
 for idx, p in enumerate(panels_12h):
-    ax  = axes_flat_b[idx]
     tl1 = (f"{p['t0']:%d %b %H:%M} to {p['t1']:%d %b %H:%M}  "
            f"Local Time (ICT)")
     tl2 = f"+{p['h0']}h to +{p['h1']}h  |  12-hour accumulated"
-    vmax = np.nanmax(p['data'])
-    draw_panel(ax, p['data'],
-               RAIN_LEVELS_12H, RAIN_COLORS_12H,
-               tl1, tl2, '')
+
     _fig_p, _ax_p = plt.subplots(
         1, 1, figsize=(cell_w, cell_h),
         subplot_kw={'projection': ccrs.PlateCarree()},
         facecolor='white')
-    draw_panel(_ax_p, p['data'],
-               RAIN_LEVELS_12H, RAIN_COLORS_12H,
-               tl1, tl2, '')
-    _fig_p.savefig(p['fn'], dpi=150,
-                   bbox_inches='tight', facecolor='white')
+
+    draw_panel(
+        _ax_p, p['data'],
+        RAIN_LEVELS_12H, RAIN_COLORS_12H,
+        tl1, tl2, '')
+
+    _fig_p.savefig(
+        p['fn'], dpi=150,
+        bbox_inches='tight', facecolor='white')
     plt.close(_fig_p)
 
-for j in range(idx + 1, len(axes_flat_b)):
-    axes_flat_b[j].set_visible(False)
-
-page_suptitle(fig_b, run_ict, run_utc,
-              '12-Hour Incremental Precipitation Forecast (10-day)')
-
-plt.tight_layout(rect=[0, 0.06, 1, 0.975])
-fig_b.legend(handles=LEGEND_HANDLES,
-             loc='lower center',
-             bbox_to_anchor=(0.5, 0.0),
-             ncol=4,
-             fontsize=7.5, framealpha=0.9,
-             edgecolor='#cccccc',
-             bbox_transform=fig_b.transFigure)
-plt.savefig('ecmwf_12h_incremental.png',
-            dpi=150, bbox_inches='tight', facecolor='white')
-print('Saved: ecmwf_12h_incremental.png')
-plt.close(fig_b)
+_make_contact_sheet(
+    [p['fn'] for p in panels_12h],
+    'ecmwf_12h_incremental.png',
+    ncols=2,
+)
 _export(panels_12h, 'ecmwf_12h_incremental.png', run_ict)
 
-status(6,88,"Generating additional 6-hour products for Google Drive...")
+
+
+status(6, 91, "Generating additional 6-hour products...")
 # @title
 # PART C — 6-Hour Incremental Precipitation
 panels_6h = []
@@ -1213,63 +1132,43 @@ for i in range(1, len(hours_6h)):
         't0': t0_ict, 't1': t1_ict, 'fn': _fn,
     })
 
-n     = len(panels_6h)
-ncols = 2
-nrows = int(np.ceil(n / ncols))
+
 
 lat_span = LAT_MAX - LAT_MIN
 lon_span = LON_MAX - LON_MIN
 cell_w   = 6.2
 cell_h   = cell_w * (lat_span / lon_span) + 1.8
 
-fig_c, axes_c = plt.subplots(
-    nrows, ncols,
-    figsize=(cell_w * ncols + 0.4, cell_h * nrows + 1.6),
-    subplot_kw={'projection': ccrs.PlateCarree()},
-    facecolor='white',
-)
-axes_flat_c = axes_c.flatten()
-
 for idx, p in enumerate(panels_6h):
-    ax  = axes_flat_c[idx]
     tl1 = (f"{p['t0']:%d %b %H:%M} to {p['t1']:%d %b %H:%M}  "
            f"Local Time (ICT)")
     tl2 = f"+{p['h0']}h to +{p['h1']}h  |  6-hour accumulated"
-    draw_panel(ax, p['data'],
-               RAIN_LEVELS_6H, RAIN_COLORS_6H,
-               tl1, tl2, '')
+
     _fig_p, _ax_p = plt.subplots(
         1, 1, figsize=(cell_w, cell_h),
         subplot_kw={'projection': ccrs.PlateCarree()},
         facecolor='white')
-    draw_panel(_ax_p, p['data'],
-               RAIN_LEVELS_6H, RAIN_COLORS_6H,
-               tl1, tl2, '')
-    _fig_p.savefig(p['fn'], dpi=150,
-                   bbox_inches='tight', facecolor='white')
+
+    draw_panel(
+        _ax_p, p['data'],
+        RAIN_LEVELS_6H, RAIN_COLORS_6H,
+        tl1, tl2, '')
+
+    _fig_p.savefig(
+        p['fn'], dpi=150,
+        bbox_inches='tight', facecolor='white')
     plt.close(_fig_p)
 
-for j in range(idx + 1, len(axes_flat_c)):
-    axes_flat_c[j].set_visible(False)
-
-page_suptitle(fig_c, run_ict, run_utc,
-              '6-Hour Incremental Precipitation Forecast (10-day)')
-
-plt.tight_layout(rect=[0, 0.06, 1, 0.975])
-fig_c.legend(handles=LEGEND_HANDLES,
-             loc='lower center',
-             bbox_to_anchor=(0.5, 0.0),
-             ncol=4,
-             fontsize=7.5, framealpha=0.9,
-             edgecolor='#cccccc',
-             bbox_transform=fig_c.transFigure)
-plt.savefig('ecmwf_6h_incremental.png',
-            dpi=150, bbox_inches='tight', facecolor='white')
-print('Saved: ecmwf_6h_incremental.png')
-plt.close(fig_c)
+_make_contact_sheet(
+    [p['fn'] for p in panels_6h],
+    'ecmwf_6h_incremental.png',
+    ncols=2,
+)
 _export(panels_6h, 'ecmwf_6h_incremental.png', run_ict)
 
-status(6,88,"Generating additional 3-hour products for Google Drive...")
+
+
+status(6, 94, "Generating additional 3-hour products...")
 # @title
 # PART D — 3-Hour Incremental Precipitation (first 6 days only)
 panels_3h = []
@@ -1291,60 +1190,40 @@ for i in range(1, len(hours_3h)):
         't0': t0_ict, 't1': t1_ict, 'fn': _fn,
     })
 
-n     = len(panels_3h)
-ncols = 2
-nrows = int(np.ceil(n / ncols))
+
 
 lat_span = LAT_MAX - LAT_MIN
 lon_span = LON_MAX - LON_MIN
 cell_w   = 6.2
 cell_h   = cell_w * (lat_span / lon_span) + 1.8
 
-fig_d, axes_d = plt.subplots(
-    nrows, ncols,
-    figsize=(cell_w * ncols + 0.4, cell_h * nrows + 1.6),
-    subplot_kw={'projection': ccrs.PlateCarree()},
-    facecolor='white',
-)
-axes_flat_d = axes_d.flatten()
-
 for idx, p in enumerate(panels_3h):
-    ax  = axes_flat_d[idx]
     tl1 = (f"{p['t0']:%d %b %H:%M} to {p['t1']:%d %b %H:%M}  "
            f"Local Time (ICT)")
     tl2 = f"+{p['h0']}h to +{p['h1']}h  |  3-hour accumulated"
-    draw_panel(ax, p['data'],
-               RAIN_LEVELS_3H, RAIN_COLORS_3H,
-               tl1, tl2, '')
+
     _fig_p, _ax_p = plt.subplots(
         1, 1, figsize=(cell_w, cell_h),
         subplot_kw={'projection': ccrs.PlateCarree()},
         facecolor='white')
-    draw_panel(_ax_p, p['data'],
-               RAIN_LEVELS_3H, RAIN_COLORS_3H,
-               tl1, tl2, '')
-    _fig_p.savefig(p['fn'], dpi=150,
-                   bbox_inches='tight', facecolor='white')
+
+    draw_panel(
+        _ax_p, p['data'],
+        RAIN_LEVELS_3H, RAIN_COLORS_3H,
+        tl1, tl2, '')
+
+    _fig_p.savefig(
+        p['fn'], dpi=150,
+        bbox_inches='tight', facecolor='white')
     plt.close(_fig_p)
 
-for j in range(idx + 1, len(axes_flat_d)):
-    axes_flat_d[j].set_visible(False)
-
-page_suptitle(fig_d, run_ict, run_utc,
-              '3-Hour Incremental Precipitation Forecast (Day 1 – Day 6)')
-
-plt.tight_layout(rect=[0, 0.06, 1, 0.975])
-fig_d.legend(handles=LEGEND_HANDLES,
-             loc='lower center',
-             bbox_to_anchor=(0.5, 0.0),
-             ncol=4,
-             fontsize=7.5, framealpha=0.9,
-             edgecolor='#cccccc',
-             bbox_transform=fig_d.transFigure)
-plt.savefig('ecmwf_3h_incremental.png',
-            dpi=150, bbox_inches='tight', facecolor='white')
-print('Saved: ecmwf_3h_incremental.png')
-plt.close(fig_d)
+_make_contact_sheet(
+    [p['fn'] for p in panels_3h],
+    'ecmwf_3h_incremental.png',
+    ncols=2,
+)
 _export(panels_3h, 'ecmwf_3h_incremental.png', run_ict)
 
-status(7,100,"All forecast products generated and export completed.")
+
+
+status(7, 100, "Processing completed.")

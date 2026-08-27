@@ -136,3 +136,29 @@ The public dashboard never exposes a Google Drive link. The Drive remains privat
 The folder ID can point directly to a folder containing the Day PNGs, or to a
 parent folder containing dated run folders. The dashboard selects the newest
 child folder that contains files matching `day1` ... `day10`.
+
+
+## V5 — Original notebook engine
+
+`forecast_engine.py` in this version is rebuilt directly from the supplied
+original notebook:
+
+`ecmwf_thailand_rainfall_forecast_with_Satellite_aoi_by_toon20060706(1).ipynb`
+
+Preserved from the notebook:
+- ECMWF Open Data retrieval and forecast steps
+- GRIB reading and precipitation calculations
+- Natural Earth Thailand/country/province boundaries
+- GISTDA SAR acquisition-plan retrieval
+- ESA Sentinel-1 fallback logic
+- TLE/SGP4 ground-track logic
+- original `draw_panel()` map rendering
+- original 24h/12h/6h/3h products
+
+Dashboard-only changes:
+- status messages
+- server output directory
+- individual map products are used to build summary contact sheets, avoiding
+  the Streamlit Cloud Cartopy/Gridliner multi-panel GEOSException
+- Google Drive remains read-only with the currently authorized OAuth scope
+- local Day 1-Day 10 products take precedence immediately after a web run
