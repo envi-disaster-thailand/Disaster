@@ -140,51 +140,6 @@ status(2, 15, "Downloading ECMWF forecast...")
 # @title
 client = Client(source='ecmwf')
 
-print('Downloading 24-hour steps (24h to 240h)...')
-result = client.retrieve(
-    type='fc',
-    param='tp',
-    step=STEPS_24H,
-    target=GRIB_FILE_24H,
-)
-run_utc = result.datetime
-if not isinstance(run_utc, datetime):
-    run_utc = datetime.utcfromtimestamp(run_utc.timestamp())
-run_ict = run_utc + TZ_OFFSET
-
-print(f'Model run (UTC)  : {run_utc:%Y-%m-%d %H:%M}')
-print(f'Model run (ICT)  : {run_ict:%Y-%m-%d %H:%M} Local Time')
-print(f'24h file size    : {os.path.getsize(GRIB_FILE_24H)/1e6:.1f} MB')
-
-print('\nDownloading 12-hour steps (12h to 240h)...')
-client.retrieve(
-    type='fc',
-    param='tp',
-    step=STEPS_12H,
-    target=GRIB_FILE_12H,
-)
-print(f'12h file size    : {os.path.getsize(GRIB_FILE_12H)/1e6:.1f} MB')
-
-print('\nDownloading 6-hour steps (6h to 240h)...')
-client.retrieve(
-    type='fc',
-    param='tp',
-    step=STEPS_6H,
-    target=GRIB_FILE_6H,
-)
-print(f'6h file size     : {os.path.getsize(GRIB_FILE_6H)/1e6:.1f} MB')
-
-print('\nDownloading 3-hour steps (3h to 144h)...')
-client.retrieve(
-    type='fc',
-    param='tp',
-    step=STEPS_3H,
-    target=GRIB_FILE_3H,
-)
-print(f'3h file size     : {os.path.getsize(GRIB_FILE_3H)/1e6:.1f} MB')
-
-
-status(3, 30, "Reading and preparing rainfall data...")
 
 def load_grib(path):
     ds = xr.open_dataset(path, engine='cfgrib',
@@ -198,6 +153,7 @@ def load_grib(path):
     step_dim = [d for d in da.dims if 'step' in d][0]
     return da, step_dim
 
+
 def to_hours(v, fb):
     try:
         return int(np.timedelta64(int(v), 'ns') / np.timedelta64(1, 'h'))
@@ -208,42 +164,52 @@ def to_hours(v, fb):
     except Exception:
         return fb
 
-da_24h, sdim_24h = load_grib(GRIB_FILE_24H)
-da_12h, sdim_12h = load_grib(GRIB_FILE_12H)
-da_6h,  sdim_6h  = load_grib(GRIB_FILE_6H)
-da_3h,  sdim_3h  = load_grib(GRIB_FILE_3H)
+
+def fetch_product(label, steps, target, fallback_steps):
+    """Download one step set, materialize the Thailand subset, drop the GRIB.
+
+    Each product is fetched only when it is about to be plotted. The
+    dashboard needs the 24-hour set alone, so the 100 MB of 12h/6h/3h data
+    must not stand between the run starting and Day 1-10 being published --
+    especially when ECMWF answers 429 and multiurl sleeps 120 s per retry.
+    """
+    print(f'\nDownloading {label} steps...', flush=True)
+    result = client.retrieve(
+        type='fc', param='tp', step=steps, target=target,
+    )
+    size_mb = os.path.getsize(target) / 1e6
+    print(f'{label} file size : {size_mb:.1f} MB', flush=True)
+
+    da, sdim = load_grib(target)
+    da.load()
+    try:
+        Path(target).unlink()
+        print(f'[cleanup] Removed temporary GRIB: {target}', flush=True)
+    except FileNotFoundError:
+        pass
+
+    hours = [to_hours(v, fallback_steps[k])
+             for k, v in enumerate(da[sdim].values)]
+    print(f'{label} steps : {hours}', flush=True)
+    return da, sdim, hours, result
+
+
+da_24h, sdim_24h, hours_24h, _result_24h = fetch_product(
+    '24h', STEPS_24H, GRIB_FILE_24H, STEPS_24H)
+
+run_utc = _result_24h.datetime
+if not isinstance(run_utc, datetime):
+    run_utc = datetime.utcfromtimestamp(run_utc.timestamp())
+run_ict = run_utc + TZ_OFFSET
+
+print(f'Model run (UTC)  : {run_utc:%Y-%m-%d %H:%M}')
+print(f'Model run (ICT)  : {run_ict:%Y-%m-%d %H:%M} Local Time')
+
+status(3, 30, "Reading and preparing rainfall data...")
 
 lats  = da_24h.latitude.values
 lons  = da_24h.longitude.values
 lon2d, lat2d = np.meshgrid(lons, lats)
-
-hours_24h = [to_hours(s, STEPS_24H[i])
-             for i, s in enumerate(da_24h[sdim_24h].values)]
-hours_12h = [to_hours(s, STEPS_12H[i])
-             for i, s in enumerate(da_12h[sdim_12h].values)]
-hours_6h  = [to_hours(s, STEPS_6H[i])
-             for i, s in enumerate(da_6h[sdim_6h].values)]
-hours_3h  = [to_hours(s, STEPS_3H[i])
-             for i, s in enumerate(da_3h[sdim_3h].values)]
-
-print(f'24h steps : {hours_24h}')
-print(f'12h steps : {hours_12h}')
-print(f'6h steps  : {hours_6h}')
-print(f'3h steps  : {hours_3h}')
-
-
-# Streamlit adaptation: materialize Thailand subsets, then remove temporary
-# GRIB files before map rendering to release local disk.
-for _da in (da_24h, da_12h, da_6h, da_3h):
-    _da.load()
-
-for _grib in (GRIB_FILE_24H, GRIB_FILE_12H, GRIB_FILE_6H, GRIB_FILE_3H):
-    try:
-        Path(_grib).unlink()
-        print(f"[cleanup] Removed temporary GRIB: {_grib}", flush=True)
-    except FileNotFoundError:
-        pass
-
 
 
 shpfile = shpreader.natural_earth(
@@ -1109,6 +1075,8 @@ def _optional_part(label, fn):
 
 def _part_12_hour():
     status(6, 88, "Generating additional 12-hour products...")
+    da_12h, sdim_12h, hours_12h, _ = fetch_product(
+        '12h', STEPS_12H, GRIB_FILE_12H, STEPS_12H)
     # @title
     panels_12h = []
     for i in range(1, len(hours_12h)):
@@ -1176,6 +1144,8 @@ _optional_part('12-hour products', _part_12_hour)
 
 def _part_6_hour():
     status(6, 91, "Generating additional 6-hour products...")
+    da_6h, sdim_6h, hours_6h, _ = fetch_product(
+        '6h', STEPS_6H, GRIB_FILE_6H, STEPS_6H)
     # @title
     # PART C — 6-Hour Incremental Precipitation
     panels_6h = []
@@ -1244,6 +1214,8 @@ _optional_part('6-hour products', _part_6_hour)
 
 def _part_3_hour():
     status(6, 94, "Generating additional 3-hour products...")
+    da_3h, sdim_3h, hours_3h, _ = fetch_product(
+        '3h', STEPS_3H, GRIB_FILE_3H, STEPS_3H)
     # @title
     # PART D — 3-Hour Incremental Precipitation (first 6 days only)
     panels_3h = []

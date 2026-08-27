@@ -24,6 +24,10 @@ COOLDOWN_MINUTES = 15
 # lock file behind and the RUN button stays disabled forever. Treat a lock
 # older than this as stale.
 LOCK_TIMEOUT_MINUTES = 60
+# ECMWF Open Data answers 429 under load and multiurl then sleeps 120 s per
+# attempt, up to 500 attempts. Without a ceiling one run can hold the lock
+# for hours while the Streamlit script stays blocked.
+RUN_TIMEOUT_MINUTES = 45
 
 # The processing engine command can later be replaced by Google Cloud Run / Cloud Batch.
 # For V1 it runs forecast_engine.py on the same server.
@@ -156,7 +160,16 @@ def run_forecast(callback: Callable | None = None):
 
         assert process.stdout is not None
 
+        deadline = time.monotonic() + RUN_TIMEOUT_MINUTES * 60
+
         for raw_line in process.stdout:
+            if time.monotonic() > deadline:
+                process.kill()
+                raise RuntimeError(
+                    f"การประมวลผลใช้เวลาเกิน {RUN_TIMEOUT_MINUTES} นาที "
+                    "จึงยกเลิกการทำงาน (ECMWF อาจกำลังจำกัดการเชื่อมต่อ)"
+                )
+
             line = raw_line.rstrip()
             print(line, flush=True)
 
