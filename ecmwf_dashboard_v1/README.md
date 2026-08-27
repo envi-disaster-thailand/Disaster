@@ -83,3 +83,34 @@ During the Day 1–Day 10 loop, update Step 6 for each day.
 ## Concurrency
 
 `forecast_runner.py` creates a lock file while a run is active. A second visitor cannot start another duplicate forecast job; they see the current processing state instead.
+
+
+## V2 full engine
+
+`forecast_engine.py` now contains the actual processing logic converted from the supplied Colab notebook:
+
+- ECMWF Open Data download
+- GRIB processing
+- Thailand mask and boundaries
+- SAR acquisition plans
+- Sentinel-1 fallback acquisition plans
+- TLE-based satellite ground tracks
+- PART A 24-hour Day 1–Day 10 maps with satellite footprints and ground tracks
+- PART B 12-hour products
+- PART C 6-hour products
+- PART D 3-hour products
+- server-side Google Drive upload support
+
+### Server-side Google Drive settings
+
+Do not put credentials in GitHub.
+
+Configure these only in Google Cloud secret/environment settings:
+
+- `GOOGLE_DRIVE_FOLDER_ID` = destination Shared Drive folder ID
+- either `GOOGLE_SERVICE_ACCOUNT_JSON` = service-account JSON stored as a secret
+- or `GOOGLE_APPLICATION_CREDENTIALS` = mounted service-account credential file
+
+The service account must have permission to the destination Shared Drive/folder.
+
+If Drive credentials are not configured, the forecast still runs and keeps outputs locally; upload is skipped.
