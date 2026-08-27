@@ -162,3 +162,30 @@ Dashboard-only changes:
   the Streamlit Cloud Cartopy/Gridliner multi-panel GEOSException
 - Google Drive remains read-only with the currently authorized OAuth scope
 - local Day 1-Day 10 products take precedence immediately after a web run
+
+
+## V6 — Shared Drive streaming
+
+- Original ECMWF/SAR/ground-track logic and original PNG rendering are retained.
+- `GOOGLE_DRIVE_FOLDER_ID` points to the existing
+  `New-Disaster-Water/Colab_ECMWF_Export/PNG` folder.
+- Each run creates/reuses `YYYY-MM-DD_HHMM_ICT`.
+- Every 3h, 6h, 12h and 24h PNG is uploaded to that run folder.
+- All four summary PNGs are uploaded too.
+- Temporary GRIB and PNG files are deleted from Streamlit after use.
+- Dashboard displays only `ecmwf-24hr-day1` through `day10`.
+
+OAuth must be regenerated with:
+`https://www.googleapis.com/auth/drive`
+
+
+## Refresh-token migration
+
+The included `get_refresh_token.py` now requests:
+
+`https://www.googleapis.com/auth/drive`
+
+Run it on the same Windows machine where `client_secret.json` is stored.
+Then replace only `GOOGLE_REFRESH_TOKEN` in Streamlit Secrets.
+
+Do not commit `client_secret.json`, client secrets, or refresh tokens to GitHub.

@@ -242,7 +242,6 @@ if run_clicked:
     except Exception as exc:
         st.error(f"เกิดข้อผิดพลาดในการประมวลผล: {exc}")
 
-render_status(load_status())
 
 st.divider()
 st.header("ปริมาณฝนสะสม 24 ชั่วโมง")
@@ -251,12 +250,10 @@ st.caption(
     "ตามผลผลิตจากกระบวนการประมวลผล"
 )
 
-# Priority:
-# 1) Local runtime maps from the latest web run
-# 2) Private Google Drive maps when there is no local run in this instance
-shown = display_local_maps()
+# Dashboard displays only private Shared Drive 24-hour Day 1-Day 10 products.
+shown = display_private_drive_maps()
 if not shown:
-    shown = display_private_drive_maps()
+    shown = display_local_maps()
 
 if not shown:
     st.info(

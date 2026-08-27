@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import streamlit as st
+from drive_writer import ensure_run_folder, upload_file
 
 import matplotlib
 matplotlib.use("Agg")
@@ -228,6 +230,20 @@ print(f'24h steps : {hours_24h}')
 print(f'12h steps : {hours_12h}')
 print(f'6h steps  : {hours_6h}')
 print(f'3h steps  : {hours_3h}')
+
+
+# Streamlit adaptation: materialize Thailand subsets, then remove temporary
+# GRIB files before map rendering to release local disk.
+for _da in (da_24h, da_12h, da_6h, da_3h):
+    _da.load()
+
+for _grib in (GRIB_FILE_24H, GRIB_FILE_12H, GRIB_FILE_6H, GRIB_FILE_3H):
+    try:
+        Path(_grib).unlink()
+        print(f"[cleanup] Removed temporary GRIB: {_grib}", flush=True)
+    except FileNotFoundError:
+        pass
+
 
 
 shpfile = shpreader.natural_earth(
@@ -932,16 +948,36 @@ print('Helper functions ready.')
 
 
 # ---------------- Dashboard export helper ----------------
-# The current Google OAuth scope is drive.readonly.
-# Results are therefore kept in OUTPUT_DIR.  The public dashboard can read
-# private Drive products through drive_reader.py, without changing the
-# original data-retrieval logic or silently broadening Google permissions.
+# Preserve the original Shared Drive structure:
+# New-Disaster-Water/Colab_ECMWF_Export/PNG/YYYY-MM-DD_HHMM_ICT
+
+DRIVE_PNG_PARENT_ID = str(st.secrets.get("GOOGLE_DRIVE_FOLDER_ID", "")).strip()
+if not DRIVE_PNG_PARENT_ID:
+    raise RuntimeError(
+        "GOOGLE_DRIVE_FOLDER_ID is missing. It must point to the existing PNG folder."
+    )
+
+RUN_FOLDER_NAME = run_ict.strftime("%Y-%m-%d_%H%M_ICT")
+RUN_FOLDER_ID = ensure_run_folder(DRIVE_PNG_PARENT_ID, RUN_FOLDER_NAME)
+print(f"Shared Drive run folder ready: {RUN_FOLDER_NAME}", flush=True)
+
+
+def _upload(path, remove_after=False):
+    p = Path(path)
+    upload_file(p, RUN_FOLDER_ID)
+    print(f"[drive] Uploaded: {p.name}", flush=True)
+    if remove_after:
+        try:
+            p.unlink()
+        except FileNotFoundError:
+            pass
+
 
 def _export(panels, summary_src, run_ict):
-    print("[export] Local products ready in dashboard output directory.")
-    print("[export] Private Google Drive is currently configured read-only; upload skipped.")
+    _upload(summary_src, remove_after=True)
 
-print("Export helper ready (read-only Google Drive mode).")
+
+print("Export helper ready (Shared Drive streaming mode).", flush=True)
 
 
 def _make_contact_sheet(image_files, output_name, ncols=2, margin=18):
@@ -1043,6 +1079,7 @@ for idx, p in enumerate(panels_24h):
         p['fn'], dpi=150,
         bbox_inches='tight', facecolor='white')
     plt.close(_fig_p)
+    _upload(p['fn'], remove_after=False)
 
 _make_contact_sheet(
     [p['fn'] for p in panels_24h],
@@ -1050,6 +1087,11 @@ _make_contact_sheet(
     ncols=2,
 )
 _export(panels_24h, 'ecmwf_24h_accumulated.png', run_ict)
+for _p in panels_24h:
+    try:
+        Path(_p['fn']).unlink()
+    except FileNotFoundError:
+        pass
 
 
 
@@ -1100,6 +1142,7 @@ for idx, p in enumerate(panels_12h):
         p['fn'], dpi=150,
         bbox_inches='tight', facecolor='white')
     plt.close(_fig_p)
+    _upload(p['fn'], remove_after=False)
 
 _make_contact_sheet(
     [p['fn'] for p in panels_12h],
@@ -1107,6 +1150,11 @@ _make_contact_sheet(
     ncols=2,
 )
 _export(panels_12h, 'ecmwf_12h_incremental.png', run_ict)
+for _p in panels_12h:
+    try:
+        Path(_p['fn']).unlink()
+    except FileNotFoundError:
+        pass
 
 
 
@@ -1158,6 +1206,7 @@ for idx, p in enumerate(panels_6h):
         p['fn'], dpi=150,
         bbox_inches='tight', facecolor='white')
     plt.close(_fig_p)
+    _upload(p['fn'], remove_after=False)
 
 _make_contact_sheet(
     [p['fn'] for p in panels_6h],
@@ -1165,6 +1214,11 @@ _make_contact_sheet(
     ncols=2,
 )
 _export(panels_6h, 'ecmwf_6h_incremental.png', run_ict)
+for _p in panels_6h:
+    try:
+        Path(_p['fn']).unlink()
+    except FileNotFoundError:
+        pass
 
 
 
@@ -1216,6 +1270,7 @@ for idx, p in enumerate(panels_3h):
         p['fn'], dpi=150,
         bbox_inches='tight', facecolor='white')
     plt.close(_fig_p)
+    _upload(p['fn'], remove_after=False)
 
 _make_contact_sheet(
     [p['fn'] for p in panels_3h],
@@ -1223,6 +1278,11 @@ _make_contact_sheet(
     ncols=2,
 )
 _export(panels_3h, 'ecmwf_3h_incremental.png', run_ict)
+for _p in panels_3h:
+    try:
+        Path(_p['fn']).unlink()
+    except FileNotFoundError:
+        pass
 
 
 
