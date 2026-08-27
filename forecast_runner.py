@@ -20,6 +20,10 @@ STATUS_FILE = OUTPUT_DIR / "run_status.json"
 LOCK_FILE = OUTPUT_DIR / ".forecast.lock"
 LAST_RUN_FILE = OUTPUT_DIR / "last_run.txt"
 COOLDOWN_MINUTES = 15
+# A run that is killed mid-way (out of memory, container restart) leaves the
+# lock file behind and the RUN button stays disabled forever. Treat a lock
+# older than this as stale.
+LOCK_TIMEOUT_MINUTES = 60
 
 # The processing engine command can later be replaced by Google Cloud Run / Cloud Batch.
 # For V1 it runs forecast_engine.py on the same server.
@@ -64,6 +68,18 @@ def _notify(callback, step, progress, message):
         callback(step, progress, message)
 
 
+def _lock_is_stale() -> bool:
+    try:
+        age = time.time() - LOCK_FILE.stat().st_mtime
+    except OSError:
+        return True
+    return age > LOCK_TIMEOUT_MINUTES * 60
+
+
+def lock_is_active() -> bool:
+    return LOCK_FILE.exists() and not _lock_is_stale()
+
+
 def run_forecast(callback: Callable | None = None):
     """
     Run one forecast job only.
@@ -74,7 +90,11 @@ def run_forecast(callback: Callable | None = None):
     - LOCK_FILE prevents users from starting duplicate jobs simultaneously.
     """
     if LOCK_FILE.exists():
-        raise RuntimeError("ระบบกำลังประมวลผลข้อมูลอยู่")
+        if _lock_is_stale():
+            print("[warn] Removing stale lock file.", flush=True)
+            LOCK_FILE.unlink(missing_ok=True)
+        else:
+            raise RuntimeError("ระบบกำลังประมวลผลข้อมูลอยู่")
 
     if LAST_RUN_FILE.exists():
         try:

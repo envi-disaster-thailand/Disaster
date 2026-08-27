@@ -70,9 +70,15 @@ def _list_children(parent_id: str):
     return items
 
 
+# The engine uploads 24h, 12h, 06h and 03h products into the SAME run
+# folder, and they all contain "dayN" in the name. Matching "dayN" alone
+# would let a 3-hour panel win the Day 6 slot, because the 3-hour files
+# are uploaded last and _day_pngs_in_folder keeps the newest match.
+DAY_PNG_RE = re.compile(r"^ecmwf-24hr-day(\d{1,2})[-_.]", re.I)
+
+
 def _extract_day(name: str) -> Optional[int]:
-    # Supports the notebook naming pattern, e.g. ecmwf-24hr-day6-...
-    m = re.search(r"(?:^|[-_])day[\s_-]?(\d{1,2})(?:[-_.]|$)", name, flags=re.I)
+    m = DAY_PNG_RE.match(name)
     if not m:
         return None
     day = int(m.group(1))

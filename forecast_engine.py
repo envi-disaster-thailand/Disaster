@@ -112,28 +112,27 @@ SAT_SHORT = {
 # Only keep footprints overlapping this bounding box (Thailand region)
 SAT_BBOX = (LON_MIN, LAT_MIN, LON_MAX, LAT_MAX)
 
-SAT_NORAD = {
-    'sentinel-1c':  [62261],
-    'sentinel-1d':  [66315],
-    'radarsat-2':   [32382],
-    'cosmo-skymed': [33412, 34151, 36508, 40055],
-}
-
-TRACK_STYLE = {
-    'sentinel-1c':  {'color': '#fff176', 'lw': 0.7, 'dash': (4, 3)},
-    'sentinel-1d':  {'color': '#fff176', 'lw': 0.7, 'dash': (4, 3)},
-    'radarsat-2':   {'color': '#39ff14', 'lw': 0.7, 'dash': (4, 3)},
-    'cosmo-skymed': {'color': '#ffe033', 'lw': 0.7, 'dash': (4, 3)},
-}
-TRACK_BBOX_PAD = 12.0
-TRACK_STEP_SEC = 60
-
 SHARED_DRIVE_PATH = (
     '/content/drive/Shareddrives/New-Disaster-Water'
     '/Colab_ECMWF_Export/PNG'
 )
 
 
+
+# Fail fast: verifying credentials after a 15-minute download wastes the run.
+_MISSING_DRIVE = [
+    _k for _k in (
+        "GOOGLE_CLIENT_ID",
+        "GOOGLE_CLIENT_SECRET",
+        "GOOGLE_REFRESH_TOKEN",
+        "GOOGLE_DRIVE_FOLDER_ID",
+    )
+    if not _drive_secret(_k)
+]
+if _MISSING_DRIVE:
+    raise RuntimeError(
+        "Missing Google Drive credentials: " + ", ".join(_MISSING_DRIVE)
+    )
 
 status(2, 15, "Downloading ECMWF forecast...")
 
@@ -283,15 +282,20 @@ def build_thailand_mask(lats, lons, geom):
     """Return boolean 2-D mask True where grid point is inside Thailand."""
     if geom is None:
         return None
-    prepared = prep(geom)
-    mask = np.zeros((len(lats), len(lons)), dtype=bool)
-    for r, lat in enumerate(lats):
-        for c, lon in enumerate(lons):
-            if prepared.contains(Point(lon, lat)):
-                mask[r, c] = True
-    return mask
+    grid_lon, grid_lat = np.meshgrid(lons, lats)
+    try:
+        import shapely
+        return shapely.contains_xy(geom, grid_lon, grid_lat)
+    except AttributeError:
+        prepared = prep(geom)
+        mask = np.zeros((len(lats), len(lons)), dtype=bool)
+        for r, lat in enumerate(lats):
+            for c, lon in enumerate(lons):
+                if prepared.contains(Point(lon, lat)):
+                    mask[r, c] = True
+        return mask
 
-print('Building Thailand grid mask (this may take ~30 s)...')
+print('Building Thailand grid mask...')
 thailand_mask = build_thailand_mask(lats, lons, thailand_geom)
 if thailand_mask is not None:
     print(f'Mask ready — {thailand_mask.sum()} grid points inside Thailand.')
@@ -613,114 +617,6 @@ else:
     print('GISTDA has both Sentinel-1C and Sentinel-1D. ESA fallback not needed.')
 
 
-status(4, 50, "Computing satellite ground tracks...")
-
-# @title
-from sgp4.api import Satrec as _Satrec, jday as _jday
-import math as _math
-
-
-def fetch_tle(norad_id, timeout=30):
-    endpoints = [
-        f'https://celestrak.org/SATCAT/tle.php?CATNR={norad_id}',
-        f'https://celestrak.org/satcat/tle.php?CATNR={norad_id}',
-    ]
-    for url in endpoints:
-        try:
-            req = urllib.request.Request(
-                url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                raw = resp.read().decode('utf-8').strip()
-            lines = [l for l in raw.splitlines() if l.strip()]
-            if len(lines) >= 3:
-                return lines[0].strip(), lines[1].strip(), lines[2].strip()
-            if len(lines) == 2 and lines[0].startswith('1 '):
-                return f'NORAD {norad_id}', lines[0].strip(), lines[1].strip()
-        except Exception:
-            continue
-    print(f'  [warn] TLE not found for NORAD {norad_id}')
-    return None
-
-
-def build_ground_track(tle1, tle2, start_utc, end_utc,
-                        step_sec=60,
-                        lon_min=92.0, lat_min=2.0,
-                        lon_max=110.0, lat_max=22.0,
-                        pad=12.0):
-    sat = _Satrec.twoline2rv(tle1, tle2)
-    pts = []
-    t = start_utc
-    prev_lon = None
-    while t <= end_utc:
-        jd, fr = _jday(t.year, t.month, t.day,
-                        t.hour, t.minute,
-                        t.second + t.microsecond / 1e6)
-        err, r, _ = sat.sgp4(jd, fr)
-        if err != 0:
-            t += timedelta(seconds=step_sec)
-            continue
-        x, y, z = r
-        lon = _math.degrees(_math.atan2(y, x))
-        lat = _math.degrees(_math.atan2(
-            z, _math.sqrt(x * x + y * y)))
-        while lon > 180:
-            lon -= 360
-        while lon < -180:
-            lon += 360
-        if prev_lon is not None and abs(lon - prev_lon) > 180:
-            pts.append(None)
-        in_region = (lon_min - pad <= lon <= lon_max + pad
-                     and lat_min - pad <= lat <= lat_max + pad)
-        if in_region:
-            pts.append((lon, lat))
-        elif pts and pts[-1] is not None:
-            pts.append(None)
-        prev_lon = lon
-        t += timedelta(seconds=step_sec)
-    return pts
-
-
-def fetch_ground_tracks(sat_names, norad_map, start_utc, end_utc,
-                         step_sec=60):
-    tracks = {}
-    for sat in sat_names:
-        norad_ids = norad_map.get(sat, [])
-        sat_tracks = []
-        for nid in norad_ids:
-            try:
-                result = fetch_tle(nid)
-                if result is None:
-                    continue
-                _, tle1, tle2 = result
-                pts = build_ground_track(
-                    tle1, tle2, start_utc, end_utc,
-                    step_sec=step_sec,
-                    lon_min=LON_MIN, lat_min=LAT_MIN,
-                    lon_max=LON_MAX, lat_max=LAT_MAX,
-                    pad=TRACK_BBOX_PAD)
-                real_pts = [p for p in pts if p is not None]
-                if real_pts:
-                    sat_tracks.append(pts)
-                    lbl = SAT_STYLE.get(sat, {}).get('label', sat)
-                    print(f'  {lbl} NORAD {nid}: '
-                          f'{len(real_pts)} track pts near region')
-            except Exception as exc:
-                print(f'  [warn] TLE fetch failed NORAD {nid}: {exc}')
-        if sat_tracks:
-            tracks[sat] = sat_tracks
-    return tracks
-
-
-track_start = run_utc
-track_end = run_utc + timedelta(hours=240)
-print(f'Computing ground tracks '
-      f'{track_start:%Y-%m-%d} to {track_end:%Y-%m-%d} ...')
-ground_tracks = fetch_ground_tracks(
-    SAT_NAMES, SAT_NORAD, track_start, track_end,
-    step_sec=TRACK_STEP_SEC)
-print(f'Done: {len(ground_tracks)} satellite(s) have tracks.')
-
-
 # @title
 # Built once and reused by every panel. Creating a NaturalEarthFeature per
 # panel re-reads the shapefile ~120 times per run and leaks memory.
@@ -731,7 +627,7 @@ COASTLINE_FEATURE = cfeature.COASTLINE.with_scale('50m')
 
 
 def draw_panel(ax, data, rain_levels, rain_colors, title_line1, title_line2, stat_label,
-               footprints=None, ground_tracks=None):
+               footprints=None):
     cmap = mcolors.ListedColormap(rain_colors)
     norm = mcolors.BoundaryNorm(rain_levels, cmap.N)
 
@@ -843,36 +739,6 @@ def draw_panel(ax, data, rain_levels, rain_colors, title_line1, title_line2, sta
                     bbox=dict(facecolor='white', alpha=0.75,
                               edgecolor='#dddddd', pad=2),
                     zorder=20)
-
-    if ground_tracks:
-        for _sat, _track_list in ground_tracks.items():
-            _ts = TRACK_STYLE.get(_sat,
-                                  {'color': '#aaaaaa',
-                                   'lw': 0.6, 'dash': (4, 3)})
-            for _pts in _track_list:
-                _slons, _slats = [], []
-                for _pt in _pts:
-                    if _pt is None:
-                        if len(_slons) > 1:
-                            ax.plot(
-                                _slons, _slats,
-                                transform=ccrs.PlateCarree(),
-                                color=_ts['color'],
-                                linewidth=_ts['lw'],
-                                linestyle=(0, _ts['dash']),
-                                alpha=0.65, zorder=12)
-                        _slons, _slats = [], []
-                    else:
-                        _slons.append(_pt[0])
-                        _slats.append(_pt[1])
-                if len(_slons) > 1:
-                    ax.plot(
-                        _slons, _slats,
-                        transform=ccrs.PlateCarree(),
-                        color=_ts['color'],
-                        linewidth=_ts['lw'],
-                        linestyle=(0, _ts['dash']),
-                        alpha=0.65, zorder=12)
 
     if footprints:
         drawn_sats = set()
@@ -1037,45 +903,92 @@ def _export(panels, summary_src, run_ict):
 print("Export helper ready (Shared Drive streaming mode).", flush=True)
 
 
-def _make_contact_sheet(image_files, output_name, ncols=2, margin=18):
-    """Build summary PNG from already-rendered original daily maps.
+# The notebook assembled its summary page by drawing every panel a second
+# time into one giant figure of GeoAxes. That is what raised the Cartopy
+# gridliner GEOSException on Streamlit, and it doubled the rendering work.
+# Here the already-rendered panel PNGs are placed into plain image axes, so
+# the tiles are the exact same renders while the suptitle and legends match
+# the notebook layout.
+SUMMARY_MAX_CANVAS_PX = 12000
 
-    This avoids re-rendering many Cartopy GeoAxes in one giant figure.
-    The individual maps themselves are still produced by the original
-    draw_panel() function from the notebook.
-    """
+
+def _make_summary_page(image_files, output_name, subtitle,
+                       ncols=2, with_satellite_legend=False):
     from PIL import Image
 
     files = [Path(f) for f in image_files if Path(f).exists()]
     if not files:
+        print(f"[warn] {output_name}: no panels to assemble", flush=True)
         return
 
-    imgs = [Image.open(f).convert("RGB") for f in files]
-    max_w = max(im.width for im in imgs)
-    max_h = max(im.height for im in imgs)
-    nrows = (len(imgs) + ncols - 1) // ncols
+    nrows = (len(files) + ncols - 1) // ncols
 
-    canvas = Image.new(
-        "RGB",
-        (
-            ncols * max_w + (ncols + 1) * margin,
-            nrows * max_h + (nrows + 1) * margin,
-        ),
-        "white",
+    with Image.open(files[0]) as probe:
+        src_w, src_h = probe.size
+
+    base_w_in = src_w / 150.0
+    base_h_in = src_h / 150.0
+    fig_w_in = ncols * base_w_in + 0.4
+    fig_h_in = nrows * base_h_in + 1.6
+
+    # The 3-hour set is 24 rows tall. At the notebook's 150 dpi that is a
+    # 31000 px image, which is what exhausts memory on Streamlit Cloud.
+    # Keep the page proportions and lower the output resolution instead.
+    save_dpi = min(150.0, SUMMARY_MAX_CANVAS_PX / fig_h_in)
+    tile_w = max(1, int(base_w_in * save_dpi))
+    tile_h = max(1, int(base_h_in * save_dpi))
+
+    fig, axes = plt.subplots(
+        nrows, ncols,
+        figsize=(fig_w_in, fig_h_in),
+        facecolor='white',
     )
+    axes_flat = np.atleast_1d(axes).ravel()
+    for ax in axes_flat:
+        ax.set_axis_off()
 
-    for i, im in enumerate(imgs):
-        r, c = divmod(i, ncols)
-        x = margin + c * max_w + (max_w - im.width) // 2
-        y = margin + r * max_h + (max_h - im.height) // 2
-        canvas.paste(im, (x, y))
+    for idx, f in enumerate(files):
+        with Image.open(f) as im:
+            im = im.convert('RGB')
+            if (tile_w, tile_h) != im.size:
+                im = im.resize((tile_w, tile_h), Image.LANCZOS)
+            axes_flat[idx].imshow(np.asarray(im))
 
-    canvas.save(output_name, dpi=(150, 150))
-    for im in imgs:
-        im.close()
+    page_suptitle(fig, run_ict, run_utc, subtitle)
+    fig.tight_layout(rect=[0, 0.06, 1, 0.975])
 
-    print(f"Saved: {output_name}")
+    fig.legend(handles=LEGEND_HANDLES,
+               loc='lower center',
+               bbox_to_anchor=(0.5, 0.0),
+               ncol=4,
+               fontsize=7.5, framealpha=0.9,
+               edgecolor='#cccccc',
+               bbox_transform=fig.transFigure)
 
+    if with_satellite_legend:
+        sats_present = {fp['sat'] for fp in all_footprints}
+        fp_handles = [
+            Line2D([0], [0], color=SAT_STYLE[s]['color'], linewidth=1.5,
+                   label=SAT_STYLE[s]['label'] + ' footprint')
+            for s in SAT_NAMES if s in sats_present and s in SAT_STYLE
+        ]
+        if fp_handles:
+            sat_leg = fig.legend(
+                handles=fp_handles,
+                loc='lower center',
+                bbox_to_anchor=(0.5, 0.028),
+                ncol=len(fp_handles), fontsize=7.5,
+                framealpha=0.9, edgecolor='#cccccc',
+                title='Satellite acquisition footprints',
+                title_fontsize=7.5,
+                bbox_transform=fig.transFigure)
+            fig.add_artist(sat_leg)
+
+    fig.savefig(output_name, dpi=save_dpi,
+                bbox_inches='tight', facecolor='white')
+    plt.close(fig)
+    print(f"Saved: {output_name} ({nrows}x{ncols} @ {save_dpi:.0f} dpi)",
+          flush=True)
 
 
 status(5, 58, "Processing 24-hour accumulated rainfall...")
@@ -1099,7 +1012,7 @@ for i in range(len(hours_24h)):
         'data': incr, 'h0': h0, 'h1': h1,
         't0': t0_ict, 't1': t1_ict, 'day': day_n,
         'fps': footprints_in_window(t0_ict, t1_ict),
-        'gts': ground_tracks, 'fn': _fn,
+        'fn': _fn,
     })
 
 
@@ -1129,214 +1042,241 @@ for idx, p in enumerate(panels_24h):
         _ax_p, p['data'],
         RAIN_LEVELS_24H, RAIN_COLORS_24H,
         tl1, tl2, '',
-        footprints=p['fps'],
-        ground_tracks=p['gts'])
+        footprints=p['fps'])
 
     save_map(_fig_p, _ax_p, p['fn'], dpi=150)
     plt.close(_fig_p)
     if Path(p['fn']).exists():
         _upload(p['fn'], remove_after=False)
 
-_make_contact_sheet(
+_make_summary_page(
     [p['fn'] for p in panels_24h],
     'ecmwf_24h_accumulated.png',
+    '24-Hour Accumulated Precipitation Forecast (Day 1 - Day 10)',
     ncols=2,
+    with_satellite_legend=True,
 )
 _export(panels_24h, 'ecmwf_24h_accumulated.png', run_ict)
-for _p in panels_24h:
+# The 24-hour day maps are deliberately kept on disk: forecast_runner
+# .get_latest_day_images() serves them when Google Drive is unreachable.
+
+# Everything the dashboard needs is now on Drive and on disk. The 12h, 6h
+# and 3h products are extra Drive deliverables, so a failure there must not
+# invalidate a run whose Day 1-10 maps already succeeded.
+status(6, 85, "Day 1-10 maps ready. Generating additional products...")
+print("[part-a] Day 1-10 24-hour products complete and uploaded.", flush=True)
+
+
+def _optional_part(label, fn):
     try:
-        Path(_p['fn']).unlink()
-    except FileNotFoundError:
-        pass
+        fn()
+    except Exception as exc:
+        print(f"[warn] {label} skipped: {type(exc).__name__}: {exc}",
+              flush=True)
 
 
 
-status(6, 88, "Generating additional 12-hour products...")
-# @title
-panels_12h = []
-for i in range(1, len(hours_12h)):
-    h0   = hours_12h[i - 1]
-    h1   = hours_12h[i]
-    curr = da_12h.isel({sdim_12h: i}).values
-    prev = da_12h.isel({sdim_12h: i - 1}).values
-    incr = np.maximum(curr - prev, 0.0)
-    t0_ict = run_utc + timedelta(hours=h0) + TZ_OFFSET
-    t1_ict = run_utc + timedelta(hours=h1) + TZ_OFFSET
-    _pn = (i - 1) // 2 + 1
-    _fn = (f'ecmwf-12hr-day{_pn}'
-           f'-{t0_ict:%Y%m%dt%H%M}'
-           f'-{t1_ict:%Y%m%dt%H%M}'
-           f'-Local-time.png')
-    panels_12h.append({
-        'data': incr, 'h0': h0, 'h1': h1,
-        't0': t0_ict, 't1': t1_ict, 'fn': _fn,
-    })
+def _part_12_hour():
+    status(6, 88, "Generating additional 12-hour products...")
+    # @title
+    panels_12h = []
+    for i in range(1, len(hours_12h)):
+        h0   = hours_12h[i - 1]
+        h1   = hours_12h[i]
+        curr = da_12h.isel({sdim_12h: i}).values
+        prev = da_12h.isel({sdim_12h: i - 1}).values
+        incr = np.maximum(curr - prev, 0.0)
+        t0_ict = run_utc + timedelta(hours=h0) + TZ_OFFSET
+        t1_ict = run_utc + timedelta(hours=h1) + TZ_OFFSET
+        _pn = (i - 1) // 2 + 1
+        _fn = (f'ecmwf-12hr-day{_pn}'
+               f'-{t0_ict:%Y%m%dt%H%M}'
+               f'-{t1_ict:%Y%m%dt%H%M}'
+               f'-Local-time.png')
+        panels_12h.append({
+            'data': incr, 'h0': h0, 'h1': h1,
+            't0': t0_ict, 't1': t1_ict, 'fn': _fn,
+        })
 
 
 
-lat_span = LAT_MAX - LAT_MIN
-lon_span = LON_MAX - LON_MIN
-cell_w   = 6.2
-cell_h   = cell_w * (lat_span / lon_span) + 1.8
+    lat_span = LAT_MAX - LAT_MIN
+    lon_span = LON_MAX - LON_MIN
+    cell_w   = 6.2
+    cell_h   = cell_w * (lat_span / lon_span) + 1.8
 
-for idx, p in enumerate(panels_12h):
-    tl1 = (f"{p['t0']:%d %b %H:%M} to {p['t1']:%d %b %H:%M}  "
-           f"Local Time (ICT)")
-    tl2 = f"+{p['h0']}h to +{p['h1']}h  |  12-hour accumulated"
+    for idx, p in enumerate(panels_12h):
+        tl1 = (f"{p['t0']:%d %b %H:%M} to {p['t1']:%d %b %H:%M}  "
+               f"Local Time (ICT)")
+        tl2 = f"+{p['h0']}h to +{p['h1']}h  |  12-hour accumulated"
 
-    _fig_p, _ax_p = plt.subplots(
-        1, 1, figsize=(cell_w, cell_h),
-        subplot_kw={'projection': ccrs.PlateCarree()},
-        facecolor='white')
+        _fig_p, _ax_p = plt.subplots(
+            1, 1, figsize=(cell_w, cell_h),
+            subplot_kw={'projection': ccrs.PlateCarree()},
+            facecolor='white')
 
-    draw_panel(
-        _ax_p, p['data'],
-        RAIN_LEVELS_12H, RAIN_COLORS_12H,
-        tl1, tl2, '')
+        draw_panel(
+            _ax_p, p['data'],
+            RAIN_LEVELS_12H, RAIN_COLORS_12H,
+            tl1, tl2, '')
 
-    save_map(_fig_p, _ax_p, p['fn'], dpi=150)
-    plt.close(_fig_p)
-    if Path(p['fn']).exists():
-        _upload(p['fn'], remove_after=False)
+        save_map(_fig_p, _ax_p, p['fn'], dpi=150)
+        plt.close(_fig_p)
+        if Path(p['fn']).exists():
+            _upload(p['fn'], remove_after=False)
 
-_make_contact_sheet(
-    [p['fn'] for p in panels_12h],
-    'ecmwf_12h_incremental.png',
-    ncols=2,
-)
-_export(panels_12h, 'ecmwf_12h_incremental.png', run_ict)
-for _p in panels_12h:
-    try:
-        Path(_p['fn']).unlink()
-    except FileNotFoundError:
-        pass
-
-
-
-status(6, 91, "Generating additional 6-hour products...")
-# @title
-# PART C — 6-Hour Incremental Precipitation
-panels_6h = []
-for i in range(1, len(hours_6h)):
-    h0   = hours_6h[i - 1]
-    h1   = hours_6h[i]
-    curr = da_6h.isel({sdim_6h: i}).values
-    prev = da_6h.isel({sdim_6h: i - 1}).values
-    incr = np.maximum(curr - prev, 0.0)
-    t0_ict = run_utc + timedelta(hours=h0) + TZ_OFFSET
-    t1_ict = run_utc + timedelta(hours=h1) + TZ_OFFSET
-    _pn = (i - 1) // 4 + 1
-    _fn = (f'ecmwf-06hr-day{_pn}'
-           f'-{t0_ict:%Y%m%dt%H%M}'
-           f'-{t1_ict:%Y%m%dt%H%M}'
-           f'-Local-time.png')
-    panels_6h.append({
-        'data': incr, 'h0': h0, 'h1': h1,
-        't0': t0_ict, 't1': t1_ict, 'fn': _fn,
-    })
+    _make_summary_page(
+        [p['fn'] for p in panels_12h],
+        'ecmwf_12h_incremental.png',
+        '12-Hour Incremental Precipitation Forecast (10-day)',
+        ncols=2,
+        with_satellite_legend=False,
+    )
+    _export(panels_12h, 'ecmwf_12h_incremental.png', run_ict)
+    for _p in panels_12h:
+        try:
+            Path(_p['fn']).unlink()
+        except FileNotFoundError:
+            pass
 
 
+_optional_part('12-hour products', _part_12_hour)
 
-lat_span = LAT_MAX - LAT_MIN
-lon_span = LON_MAX - LON_MIN
-cell_w   = 6.2
-cell_h   = cell_w * (lat_span / lon_span) + 1.8
 
-for idx, p in enumerate(panels_6h):
-    tl1 = (f"{p['t0']:%d %b %H:%M} to {p['t1']:%d %b %H:%M}  "
-           f"Local Time (ICT)")
-    tl2 = f"+{p['h0']}h to +{p['h1']}h  |  6-hour accumulated"
-
-    _fig_p, _ax_p = plt.subplots(
-        1, 1, figsize=(cell_w, cell_h),
-        subplot_kw={'projection': ccrs.PlateCarree()},
-        facecolor='white')
-
-    draw_panel(
-        _ax_p, p['data'],
-        RAIN_LEVELS_6H, RAIN_COLORS_6H,
-        tl1, tl2, '')
-
-    save_map(_fig_p, _ax_p, p['fn'], dpi=150)
-    plt.close(_fig_p)
-    if Path(p['fn']).exists():
-        _upload(p['fn'], remove_after=False)
-
-_make_contact_sheet(
-    [p['fn'] for p in panels_6h],
-    'ecmwf_6h_incremental.png',
-    ncols=2,
-)
-_export(panels_6h, 'ecmwf_6h_incremental.png', run_ict)
-for _p in panels_6h:
-    try:
-        Path(_p['fn']).unlink()
-    except FileNotFoundError:
-        pass
+def _part_6_hour():
+    status(6, 91, "Generating additional 6-hour products...")
+    # @title
+    # PART C — 6-Hour Incremental Precipitation
+    panels_6h = []
+    for i in range(1, len(hours_6h)):
+        h0   = hours_6h[i - 1]
+        h1   = hours_6h[i]
+        curr = da_6h.isel({sdim_6h: i}).values
+        prev = da_6h.isel({sdim_6h: i - 1}).values
+        incr = np.maximum(curr - prev, 0.0)
+        t0_ict = run_utc + timedelta(hours=h0) + TZ_OFFSET
+        t1_ict = run_utc + timedelta(hours=h1) + TZ_OFFSET
+        _pn = (i - 1) // 4 + 1
+        _fn = (f'ecmwf-06hr-day{_pn}'
+               f'-{t0_ict:%Y%m%dt%H%M}'
+               f'-{t1_ict:%Y%m%dt%H%M}'
+               f'-Local-time.png')
+        panels_6h.append({
+            'data': incr, 'h0': h0, 'h1': h1,
+            't0': t0_ict, 't1': t1_ict, 'fn': _fn,
+        })
 
 
 
-status(6, 94, "Generating additional 3-hour products...")
-# @title
-# PART D — 3-Hour Incremental Precipitation (first 6 days only)
-panels_3h = []
-for i in range(1, len(hours_3h)):
-    h0   = hours_3h[i - 1]
-    h1   = hours_3h[i]
-    curr = da_3h.isel({sdim_3h: i}).values
-    prev = da_3h.isel({sdim_3h: i - 1}).values
-    incr = np.maximum(curr - prev, 0.0)
-    t0_ict = run_utc + timedelta(hours=h0) + TZ_OFFSET
-    t1_ict = run_utc + timedelta(hours=h1) + TZ_OFFSET
-    _pn = (i - 1) // 8 + 1
-    _fn = (f'ecmwf-03hr-day{_pn}'
-           f'-{t0_ict:%Y%m%dt%H%M}'
-           f'-{t1_ict:%Y%m%dt%H%M}'
-           f'-Local-time.png')
-    panels_3h.append({
-        'data': incr, 'h0': h0, 'h1': h1,
-        't0': t0_ict, 't1': t1_ict, 'fn': _fn,
-    })
+    lat_span = LAT_MAX - LAT_MIN
+    lon_span = LON_MAX - LON_MIN
+    cell_w   = 6.2
+    cell_h   = cell_w * (lat_span / lon_span) + 1.8
+
+    for idx, p in enumerate(panels_6h):
+        tl1 = (f"{p['t0']:%d %b %H:%M} to {p['t1']:%d %b %H:%M}  "
+               f"Local Time (ICT)")
+        tl2 = f"+{p['h0']}h to +{p['h1']}h  |  6-hour accumulated"
+
+        _fig_p, _ax_p = plt.subplots(
+            1, 1, figsize=(cell_w, cell_h),
+            subplot_kw={'projection': ccrs.PlateCarree()},
+            facecolor='white')
+
+        draw_panel(
+            _ax_p, p['data'],
+            RAIN_LEVELS_6H, RAIN_COLORS_6H,
+            tl1, tl2, '')
+
+        save_map(_fig_p, _ax_p, p['fn'], dpi=150)
+        plt.close(_fig_p)
+        if Path(p['fn']).exists():
+            _upload(p['fn'], remove_after=False)
+
+    _make_summary_page(
+        [p['fn'] for p in panels_6h],
+        'ecmwf_6h_incremental.png',
+        '6-Hour Incremental Precipitation Forecast (10-day)',
+        ncols=2,
+        with_satellite_legend=False,
+    )
+    _export(panels_6h, 'ecmwf_6h_incremental.png', run_ict)
+    for _p in panels_6h:
+        try:
+            Path(_p['fn']).unlink()
+        except FileNotFoundError:
+            pass
+
+
+_optional_part('6-hour products', _part_6_hour)
+
+
+def _part_3_hour():
+    status(6, 94, "Generating additional 3-hour products...")
+    # @title
+    # PART D — 3-Hour Incremental Precipitation (first 6 days only)
+    panels_3h = []
+    for i in range(1, len(hours_3h)):
+        h0   = hours_3h[i - 1]
+        h1   = hours_3h[i]
+        curr = da_3h.isel({sdim_3h: i}).values
+        prev = da_3h.isel({sdim_3h: i - 1}).values
+        incr = np.maximum(curr - prev, 0.0)
+        t0_ict = run_utc + timedelta(hours=h0) + TZ_OFFSET
+        t1_ict = run_utc + timedelta(hours=h1) + TZ_OFFSET
+        _pn = (i - 1) // 8 + 1
+        _fn = (f'ecmwf-03hr-day{_pn}'
+               f'-{t0_ict:%Y%m%dt%H%M}'
+               f'-{t1_ict:%Y%m%dt%H%M}'
+               f'-Local-time.png')
+        panels_3h.append({
+            'data': incr, 'h0': h0, 'h1': h1,
+            't0': t0_ict, 't1': t1_ict, 'fn': _fn,
+        })
 
 
 
-lat_span = LAT_MAX - LAT_MIN
-lon_span = LON_MAX - LON_MIN
-cell_w   = 6.2
-cell_h   = cell_w * (lat_span / lon_span) + 1.8
+    lat_span = LAT_MAX - LAT_MIN
+    lon_span = LON_MAX - LON_MIN
+    cell_w   = 6.2
+    cell_h   = cell_w * (lat_span / lon_span) + 1.8
 
-for idx, p in enumerate(panels_3h):
-    tl1 = (f"{p['t0']:%d %b %H:%M} to {p['t1']:%d %b %H:%M}  "
-           f"Local Time (ICT)")
-    tl2 = f"+{p['h0']}h to +{p['h1']}h  |  3-hour accumulated"
+    for idx, p in enumerate(panels_3h):
+        tl1 = (f"{p['t0']:%d %b %H:%M} to {p['t1']:%d %b %H:%M}  "
+               f"Local Time (ICT)")
+        tl2 = f"+{p['h0']}h to +{p['h1']}h  |  3-hour accumulated"
 
-    _fig_p, _ax_p = plt.subplots(
-        1, 1, figsize=(cell_w, cell_h),
-        subplot_kw={'projection': ccrs.PlateCarree()},
-        facecolor='white')
+        _fig_p, _ax_p = plt.subplots(
+            1, 1, figsize=(cell_w, cell_h),
+            subplot_kw={'projection': ccrs.PlateCarree()},
+            facecolor='white')
 
-    draw_panel(
-        _ax_p, p['data'],
-        RAIN_LEVELS_3H, RAIN_COLORS_3H,
-        tl1, tl2, '')
+        draw_panel(
+            _ax_p, p['data'],
+            RAIN_LEVELS_3H, RAIN_COLORS_3H,
+            tl1, tl2, '')
 
-    save_map(_fig_p, _ax_p, p['fn'], dpi=150)
-    plt.close(_fig_p)
-    if Path(p['fn']).exists():
-        _upload(p['fn'], remove_after=False)
+        save_map(_fig_p, _ax_p, p['fn'], dpi=150)
+        plt.close(_fig_p)
+        if Path(p['fn']).exists():
+            _upload(p['fn'], remove_after=False)
 
-_make_contact_sheet(
-    [p['fn'] for p in panels_3h],
-    'ecmwf_3h_incremental.png',
-    ncols=2,
-)
-_export(panels_3h, 'ecmwf_3h_incremental.png', run_ict)
-for _p in panels_3h:
-    try:
-        Path(_p['fn']).unlink()
-    except FileNotFoundError:
-        pass
+    _make_summary_page(
+        [p['fn'] for p in panels_3h],
+        'ecmwf_3h_incremental.png',
+        '3-Hour Incremental Precipitation Forecast (Day 1 - Day 6)',
+        ncols=2,
+        with_satellite_legend=False,
+    )
+    _export(panels_3h, 'ecmwf_3h_incremental.png', run_ict)
+    for _p in panels_3h:
+        try:
+            Path(_p['fn']).unlink()
+        except FileNotFoundError:
+            pass
 
+
+_optional_part('3-hour products', _part_3_hour)
 
 
 status(7, 100, "Processing completed.")

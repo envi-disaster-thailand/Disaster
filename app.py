@@ -9,8 +9,8 @@ import streamlit as st
 
 from forecast_runner import (
     STATUS_FILE,
-    LOCK_FILE,
     LAST_RUN_FILE,
+    lock_is_active,
     COOLDOWN_MINUTES,
     run_forecast,
     get_latest_day_images,
@@ -197,7 +197,7 @@ st.markdown(
 )
 
 status = load_status()
-is_running = bool(status.get("running", False)) or LOCK_FILE.exists()
+is_running = bool(status.get("running", False)) or lock_is_active()
 remaining = cooldown_remaining()
 in_cooldown = remaining > 0
 disable_run = is_running or in_cooldown
