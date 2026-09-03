@@ -1,34 +1,14 @@
 from __future__ import annotations
 
 import os
-import signal
-import time
 from pathlib import Path
 import streamlit as st
 from drive_writer import ensure_run_folder, upload_file
 
 import matplotlib
-import hashlib
 matplotlib.use("Agg")
 
-
-def _self_sha256():
-    try:
-        h = hashlib.sha256()
-        with open(__file__, "rb") as f:
-            for chunk in iter(lambda: f.read(1024 * 1024), b""):
-                h.update(chunk)
-        return h.hexdigest()
-    except Exception as exc:
-        return f"ERROR:{type(exc).__name__}:{exc}"
-
-print(f"ENGINE|Running file: {Path(__file__).resolve()}", flush=True)
-print(f"ENGINE|Python: {sys.executable}", flush=True)
-print(f"ENGINE|Working directory: {Path.cwd().resolve()}", flush=True)
-print(f"ENGINE|SHA256: {_self_sha256()}", flush=True)
-print("ENGINE|Version: V9.9_DIAGNOSTIC_2026-09-03", flush=True)
-
-print("ENGINE_VERSION|V9.9_DIAGNOSTIC_2026-09-03", flush=True)
+print("ENGINE_VERSION|V7_FINAL_FIX_2026-08-27", flush=True)
 
 ENGINE_VERSION = "V7_FINAL_FIX_2026-08-27"
 print(f"ENGINE_VERSION|{ENGINE_VERSION}", flush=True)
@@ -211,121 +191,40 @@ print(f'3h file size     : {os.path.getsize(GRIB_FILE_3H)/1e6:.1f} MB')
 
 
 status(3, 30, "Reading and preparing rainfall data...")
-print("CHECKPOINT|STEP3|01|Entered Step 3", flush=True)
-print("CHECKPOINT|STEP3|02|About to inspect GRIB input files", flush=True)
-for _label, _path in (
-    ("24h", GRIB_FILE_24H),
-    ("12h", GRIB_FILE_12H),
-    ("6h", GRIB_FILE_6H),
-    ("3h", GRIB_FILE_3H),
-):
-    print(f"CHECKPOINT|STEP3|FILE|{_label}|checking|{os.path.basename(_path)}", flush=True)
-    _exists = os.path.exists(_path)
-    _size = os.path.getsize(_path) if _exists else -1
+
+def load_grib(path, label):
+    print(f"DETAIL|STEP3|Opening {label} GRIB: {os.path.basename(path)}", flush=True)
+    ds = xr.open_dataset(path, engine='cfgrib',
+                         backend_kwargs={'indexpath': ''})
+    print(f"DETAIL|STEP3|Opened {label} GRIB; selecting Thailand rainfall data...", flush=True)
+    var = [v for v in ds.data_vars
+           if 'tp' in v.lower() or 'precip' in v.lower()][0]
+    da = ds[var].sel(
+        latitude=slice(LAT_MAX, LAT_MIN),
+        longitude=slice(LON_MIN, LON_MAX),
+    ) * 1000.0
+    step_dim = [d for d in da.dims if 'step' in d][0]
     print(
-        f"CHECKPOINT|STEP3|FILE|{_label}|exists={_exists}|bytes={_size}",
+        f"DETAIL|STEP3|Prepared {label}: variable={var}, "
+        f"shape={tuple(da.shape)}, step_dim={step_dim}",
         flush=True,
     )
-print("CHECKPOINT|STEP3|03|GRIB input inspection complete", flush=True)
+    return da, step_dim
 
-class _GribOpenTimeout(Exception):
-    pass
+def to_hours(v, fb):
+    try:
+        return int(np.timedelta64(int(v), 'ns') / np.timedelta64(1, 'h'))
+    except Exception:
+        pass
+    try:
+        return int(v / np.timedelta64(1, 'h'))
+    except Exception:
+        return fb
 
-
-def _grib_alarm_handler(signum, frame):
-    raise _GribOpenTimeout("GRIB open timed out")
-
-
-def open_grib_with_retry(path, label, timeout_seconds=180, retries=2):
-    """
-    Open one ECMWF GRIB dataset with bounded wait + retry.
-
-    Important:
-    - Keeps the same xarray/cfgrib decoding path and rainfall data.
-    - indexpath="" avoids persistent cfgrib .idx files on ephemeral Streamlit storage.
-    - On Linux, SIGALRM prevents an individual xr.open_dataset() call from waiting forever.
-    - If an attempt fails/times out, any stale .idx sidecars are removed before retry.
-    """
-    path = str(path)
-    last_error = None
-
-    for attempt in range(1, retries + 1):
-        print(
-            f"DETAIL|STEP3|Opening {label} GRIB "
-            f"(attempt {attempt}/{retries}, timeout={timeout_seconds}s): {Path(path).name}",
-            flush=True,
-        )
-
-        # Remove stale cfgrib index sidecars before every attempt.
-        for idx in Path(path).parent.glob(Path(path).name + "*.idx"):
-            try:
-                idx.unlink()
-                print(f"DETAIL|STEP3|Removed stale cfgrib index: {idx.name}", flush=True)
-            except Exception as exc:
-                print(f"DETAIL|STEP3|Could not remove index {idx.name}: {exc}", flush=True)
-
-        old_handler = None
-        alarm_enabled = hasattr(signal, "SIGALRM")
-        try:
-            if alarm_enabled:
-                old_handler = signal.signal(signal.SIGALRM, _grib_alarm_handler)
-                signal.alarm(timeout_seconds)
-
-            ds = xr.open_dataset(
-                path,
-                engine="cfgrib",
-                backend_kwargs={"indexpath": ""},
-            )
-
-            if alarm_enabled:
-                signal.alarm(0)
-
-            print(
-                f"DETAIL|STEP3|Opened {label} GRIB successfully on attempt {attempt}/{retries}",
-                flush=True,
-            )
-            return ds
-
-        except Exception as exc:
-            last_error = exc
-            if alarm_enabled:
-                signal.alarm(0)
-
-            kind = "TIMEOUT" if isinstance(exc, _GribOpenTimeout) else type(exc).__name__
-            print(
-                f"DETAIL|STEP3|{label} GRIB attempt {attempt}/{retries} failed: "
-                f"{kind}: {exc}",
-                flush=True,
-            )
-
-            if attempt < retries:
-                print(
-                    f"DETAIL|STEP3|Retrying {label} GRIB in 3 seconds...",
-                    flush=True,
-                )
-                time.sleep(3)
-
-        finally:
-            if alarm_enabled and old_handler is not None:
-                try:
-                    signal.signal(signal.SIGALRM, old_handler)
-                except Exception:
-                    pass
-
-    raise RuntimeError(
-        f"Unable to open {label} GRIB after {retries} attempts. Last error: {last_error}"
-    )
-
-
-print("CHECKPOINT|STEP3|04|About to decode 24h GRIB", flush=True)
 print("DETAIL|STEP3|Starting GRIB decoding for 24h, 12h, 6h and 3h datasets...", flush=True)
-print("CHECKPOINT|STEP3|05|Calling load_grib 24h", flush=True)
 da_24h, sdim_24h = load_grib(GRIB_FILE_24H, "24h")
-print("CHECKPOINT|STEP3|06|Calling load_grib 12h", flush=True)
 da_12h, sdim_12h = load_grib(GRIB_FILE_12H, "12h")
-print("CHECKPOINT|STEP3|07|Calling load_grib 6h", flush=True)
 da_6h,  sdim_6h  = load_grib(GRIB_FILE_6H, "6h")
-print("CHECKPOINT|STEP3|08|Calling load_grib 3h", flush=True)
 da_3h,  sdim_3h  = load_grib(GRIB_FILE_3H, "3h")
 print("DETAIL|STEP3|All GRIB datasets opened successfully; preparing coordinate grids...", flush=True)
 
