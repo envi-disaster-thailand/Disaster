@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import streamlit as st
-print("APP_VERSION|V9.1_STALE_RECOVERY", flush=True)
+print("APP_VERSION|V9.2_ATOMIC_STATUS", flush=True)
 
 from forecast_runner import (
     STATUS_FILE,

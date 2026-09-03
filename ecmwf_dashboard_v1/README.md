@@ -226,3 +226,12 @@ only for the specific LinearRing/closed-linestring exception.
 - Removes the stale lock and marks the old run as stopped so the Run button is enabled.
 - Keeps the V9 PID-aware behavior for new runs.
 - Does not modify `forecast_engine.py`, ECMWF retrieval, rainfall calculations, or map styling.
+
+
+## V9.2 — atomic status writes
+- Fixes the confirmed `run_status.tmp -> run_status.json` race condition.
+- Each Streamlit session/rerun writes to its own unique temporary status file.
+- The completed JSON is published with atomic `os.replace`.
+- Keeps V9.1 stale-state recovery and V9 PID checks.
+- Does not modify `forecast_engine.py`, ECMWF retrieval, rainfall calculations,
+  SAR logic, map styling, colors, boundaries, labels, or map dimensions.
