@@ -274,3 +274,12 @@ calculation formulas, SAR logic, and map styling are unchanged.
 - Displays forecast maps at 90% of the prior dashboard width, centered.
 - Generated map PNG files and map styling are unchanged.
 - `forecast_engine.py` and `forecast_runner.py` are unchanged.
+
+
+## V9.10 — Google Drive secrets handoff
+- Based on stable V9.6.
+- The Streamlit app/runner reads Google credentials from `st.secrets`.
+- The runner passes those values to `forecast_engine.py` through subprocess environment variables.
+- `forecast_engine.py` reads Google Drive credentials from `os.environ` instead of calling `st.secrets` inside the subprocess.
+- This fixes `StreamlitSecretNotFoundError` caused by the engine subprocess looking for `secrets.toml` under the outputs working directory.
+- ECMWF retrieval, rainfall calculations, SAR logic, map styling, output naming, and UI behavior remain unchanged from V9.6.

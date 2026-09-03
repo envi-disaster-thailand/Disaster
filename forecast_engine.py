@@ -990,7 +990,7 @@ print('Helper functions ready.')
 # Preserve the original Shared Drive structure:
 # New-Disaster-Water/Colab_ECMWF_Export/PNG/YYYY-MM-DD_HHMM_ICT
 
-DRIVE_PNG_PARENT_ID = str(st.secrets.get("GOOGLE_DRIVE_FOLDER_ID", "")).strip()
+DRIVE_PNG_PARENT_ID = str(os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "")).strip()
 if not DRIVE_PNG_PARENT_ID:
     raise RuntimeError(
         "GOOGLE_DRIVE_FOLDER_ID is missing. It must point to the existing PNG folder."
