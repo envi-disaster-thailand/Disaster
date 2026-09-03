@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import streamlit as st
-print("APP_VERSION|V8_STATUS_HEALTH", flush=True)
+print("APP_VERSION|V9_RUNNER_PINNED", flush=True)
 
 from forecast_runner import (
     STATUS_FILE,
@@ -192,6 +192,14 @@ def render_status(status: dict):
         st.caption(f"เริ่มประมวลผล: {status['started_at']}")
     if status.get("updated_at"):
         st.caption(f"ปรับปรุงสถานะล่าสุด: {status['updated_at']}")
+
+    pid = health.get("pid")
+    pid_alive = health.get("pid_alive")
+    if running and pid is not None:
+        if pid_alive is True:
+            st.caption(f"Process ID {pid}: ยังทำงานอยู่")
+        elif pid_alive is False:
+            st.caption(f"Process ID {pid}: ไม่พบกระบวนการแล้ว")
 
     age = health.get("heartbeat_age_seconds")
     if running and age is not None:

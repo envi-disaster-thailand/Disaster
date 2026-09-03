@@ -26,6 +26,22 @@ STALE_WARNING_MINUTES = 8
 STALE_LOCK_MINUTES = 45
 
 
+def _pid_is_alive(pid) -> bool:
+    """Best-effort child-process liveness check on Linux."""
+    try:
+        pid = int(pid)
+        if pid <= 0:
+            return False
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except (TypeError, ValueError, OSError):
+        return False
+
+
 def _now_dt() -> datetime:
     return datetime.now()
 
@@ -178,84 +194,92 @@ def _lock_age_minutes() -> float | None:
 
 
 def status_health(status: dict | None = None) -> dict:
-    """
-    Return a user-facing health assessment without modifying the job.
-
-    health:
-      normal   = sequence and heartbeat look normal
-      warning  = no recent heartbeat or sequence anomaly
-      error    = stale lock / failed job
-    """
+    """Assess heartbeat, sequence, lock age, and the actual child PID."""
     status = status or _read_status()
     result = {
         "health": status.get("health", "normal"),
         "anomaly": status.get("anomaly"),
         "stale": False,
         "lock_stale": False,
+        "process_dead": False,
         "heartbeat_age_seconds": None,
+        "pid": status.get("engine_pid"),
+        "pid_alive": None,
     }
 
+    pid = status.get("engine_pid")
+    if pid is not None:
+        result["pid_alive"] = _pid_is_alive(pid)
+
     heartbeat = status.get("heartbeat_at") or status.get("updated_at")
+    age = None
     if heartbeat:
         try:
             hb = datetime.fromisoformat(heartbeat)
-            age = (_now_dt() - hb).total_seconds()
-            result["heartbeat_age_seconds"] = max(0, int(age))
-
-            if status.get("running") and age > STALE_WARNING_MINUTES * 60:
-                result["stale"] = True
-                result["health"] = "warning"
-                if not result["anomaly"]:
-                    result["anomaly"] = (
-                        f"ไม่พบการอัปเดตจากกระบวนการนานกว่า "
-                        f"{STALE_WARNING_MINUTES} นาที อาจกำลังใช้เวลาคำนวณนาน "
-                        "หรือกระบวนการอาจหยุดตอบสนอง"
-                    )
+            age = max(0.0, (_now_dt() - hb).total_seconds())
+            result["heartbeat_age_seconds"] = int(age)
         except Exception:
             pass
 
+    if status.get("running") and pid is not None and result["pid_alive"] is False:
+        result["process_dead"] = True
+        result["health"] = "error"
+        result["anomaly"] = (
+            "ไม่พบกระบวนการประมวลผลเดิมแล้ว แต่สถานะยังค้างว่า Running"
+        )
+        return result
+
+    if status.get("running") and age is not None and age > STALE_WARNING_MINUTES * 60:
+        result["stale"] = True
+        result["health"] = "warning"
+        if not result["anomaly"]:
+            result["anomaly"] = (
+                f"ไม่พบการอัปเดตนานกว่า {STALE_WARNING_MINUTES} นาที "
+                "แต่จะไม่ยกเลิกงานหาก Process ยังมีชีวิตอยู่"
+            )
+
     lock_age = _lock_age_minutes()
-    if (
-        LOCK_FILE.exists()
-        and lock_age is not None
-        and lock_age > STALE_LOCK_MINUTES
-    ):
+    if (LOCK_FILE.exists() and lock_age is not None
+            and lock_age > STALE_LOCK_MINUTES
+            and (pid is None or result["pid_alive"] is False)):
         result["lock_stale"] = True
         result["health"] = "error"
         result["anomaly"] = (
             f"พบ Lock ค้างนานกว่า {STALE_LOCK_MINUTES} นาที "
-            "มีความเป็นไปได้ว่ากระบวนการเดิมหยุดทำงาน"
+            "และไม่พบ Process ที่ยังทำงานอยู่"
         )
 
     if status.get("error"):
         result["health"] = "error"
-
     return result
 
-
 def clear_stale_lock_if_safe() -> bool:
-    """
-    Clear only an obviously stale lock.
-    This is deliberately conservative.
-    """
-    health = status_health()
-    if not health.get("lock_stale"):
+    """Clear only a lock whose recorded process is demonstrably gone."""
+    status = _read_status()
+    health = status_health(status)
+    lock_age = _lock_age_minutes()
+
+    should_clear = (
+        health.get("process_dead")
+        or health.get("lock_stale")
+        or (LOCK_FILE.exists() and not status.get("running")
+            and lock_age is not None and lock_age > 1)
+    )
+    if not should_clear:
         return False
 
-    status = _read_status()
     _write_status(
         running=False,
         step=int(status.get("step", 0) or 0),
         progress=int(status.get("progress", 0) or 0),
-        message="ยกเลิกสถานะค้างของกระบวนการเดิมแล้ว",
-        error=None,
-        health="warning",
-        anomaly="ตรวจพบ Lock ค้างและได้ปลด Lock อัตโนมัติเพื่อให้ระบบกลับมาใช้งานได้",
+        message="ตรวจพบงานเดิมหยุดทำงานและปลด Lock แล้ว",
+        error=status.get("error"),
+        health="error",
+        anomaly=health.get("anomaly") or "ตรวจพบ Lock ของงานเดิมค้าง",
         detail=status.get("detail"),
     )
     LOCK_FILE.unlink(missing_ok=True)
     return True
-
 
 def run_forecast(callback: Callable | None = None):
     """
