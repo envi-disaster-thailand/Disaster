@@ -9,6 +9,7 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
+import streamlit as st
 
 ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = ROOT / "outputs"
@@ -20,6 +21,25 @@ LAST_RUN_FILE = OUTPUT_DIR / "last_run.txt"
 COOLDOWN_MINUTES = 15
 
 ENGINE_FILE = ROOT / "forecast_engine.py"
+
+def _engine_env() -> dict:
+    """Pass required Google Drive secrets from the Streamlit app to the engine subprocess."""
+    env = os.environ.copy()
+    secret_keys = (
+        "GOOGLE_CLIENT_ID",
+        "GOOGLE_CLIENT_SECRET",
+        "GOOGLE_REFRESH_TOKEN",
+        "GOOGLE_DRIVE_FOLDER_ID",
+    )
+    for key in secret_keys:
+        try:
+            value = st.secrets.get(key, "")
+        except Exception:
+            value = ""
+        if value:
+            env[key] = str(value)
+    return env
+
 
 # A status is considered suspicious when no heartbeat has been received for
 # this long. It is a warning first; it does not automatically kill the job.
