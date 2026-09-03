@@ -36,9 +36,8 @@ STATUS_FILE = OUTPUT_DIR / "run_status.json"
 LOCK_FILE = OUTPUT_DIR / ".forecast.lock"
 LAST_RUN_FILE = OUTPUT_DIR / "last_run.txt"
 # Minutes of rest after a run FINISHES before the next one may start.
-# A dashboard run takes about 8 minutes, so the shortest possible gap between
-# two runs starting is roughly 38 minutes.
-COOLDOWN_MINUTES = int(_env_int("COOLDOWN_MINUTES", 30))
+# Override from Streamlit Secrets with COOLDOWN_MINUTES.
+COOLDOWN_MINUTES = int(_env_int("COOLDOWN_MINUTES", 15))
 
 ENGINE_FILE = ROOT / "forecast_engine.py"
 

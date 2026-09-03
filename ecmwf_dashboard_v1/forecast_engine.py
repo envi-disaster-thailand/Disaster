@@ -8,7 +8,7 @@ from drive_auth import credentials_mode
 import matplotlib
 matplotlib.use("Agg")
 
-ENGINE_VERSION = "V9.21_SERVICE_ACCOUNT_2026-09-03"
+ENGINE_VERSION = "V9.22_TLE_ENDPOINT_2026-09-03"
 print(f"ENGINE_VERSION|{ENGINE_VERSION}", flush=True)
 
 
@@ -731,25 +731,70 @@ from sgp4.api import Satrec as _Satrec, jday as _jday
 import math as _math
 
 
-def fetch_tle(norad_id, timeout=30):
-    endpoints = [
-        f'https://celestrak.org/SATCAT/tle.php?CATNR={norad_id}',
-        f'https://celestrak.org/satcat/tle.php?CATNR={norad_id}',
-    ]
-    for url in endpoints:
+# Celestrak retired /SATCAT/tle.php; the current endpoint is
+# /NORAD/elements/gp.php. The old paths are kept last as a fallback. The first
+# template that returns a real TLE is remembered and tried first afterwards, so
+# only the first satellite pays for probing.
+TLE_ENDPOINTS = (
+    'https://celestrak.org/NORAD/elements/gp.php?CATNR={norad}&FORMAT=tle',
+    'https://celestrak.com/NORAD/elements/gp.php?CATNR={norad}&FORMAT=tle',
+    'https://celestrak.org/SATCAT/tle.php?CATNR={norad}',
+)
+
+_TLE_STATE = {'endpoint': None, 'offline': False}
+
+
+def _is_tle_pair(lines):
+    return (len(lines) >= 2
+            and lines[-2].lstrip().startswith('1 ')
+            and lines[-1].lstrip().startswith('2 '))
+
+
+def fetch_tle(norad_id, timeout=15):
+    # Celestrak proved unreachable earlier in this run. Do not spend another
+    # timeout per satellite; that alone used to cost minutes.
+    if _TLE_STATE['offline']:
+        return None
+
+    templates = list(TLE_ENDPOINTS)
+    if _TLE_STATE['endpoint'] in templates:
+        templates.remove(_TLE_STATE['endpoint'])
+        templates.insert(0, _TLE_STATE['endpoint'])
+
+    note = 'no response'
+    answered = False
+
+    for template in templates:
+        url = template.format(norad=norad_id)
         try:
             req = urllib.request.Request(
                 url, headers={'User-Agent': 'Mozilla/5.0'})
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                raw = resp.read().decode('utf-8').strip()
-            lines = [l for l in raw.splitlines() if l.strip()]
-            if len(lines) >= 3:
-                return lines[0].strip(), lines[1].strip(), lines[2].strip()
-            if len(lines) == 2 and lines[0].startswith('1 '):
-                return f'NORAD {norad_id}', lines[0].strip(), lines[1].strip()
-        except Exception:
+                raw = resp.read().decode('utf-8', errors='ignore').strip()
+        except Exception as exc:
+            note = f'{type(exc).__name__}: {str(exc)[:60]}'
             continue
-    print(f'  [warn] TLE not found for NORAD {norad_id}')
+
+        answered = True
+        lines = [l.rstrip() for l in raw.splitlines() if l.strip()]
+
+        if _is_tle_pair(lines):
+            if _TLE_STATE['endpoint'] != template:
+                _TLE_STATE['endpoint'] = template
+                print(f'  [tle] using {template.split("?")[0]}', flush=True)
+            name = lines[-3].strip() if len(lines) >= 3 else f'NORAD {norad_id}'
+            return name, lines[-2].strip(), lines[-1].strip()
+
+        note = lines[0][:60] if lines else 'empty response'
+
+    print(f'  [warn] TLE not found for NORAD {norad_id} ({note})', flush=True)
+
+    # Every endpoint refused to answer at all and none has ever worked: the
+    # service is unreachable, not the satellite id. Skip the rest of the run.
+    if not answered and _TLE_STATE['endpoint'] is None:
+        _TLE_STATE['offline'] = True
+        print('  [warn] Celestrak unreachable. Ground tracks are skipped for '
+              'this run; maps still show SAR footprints.', flush=True)
     return None
 
 

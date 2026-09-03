@@ -545,3 +545,41 @@ even when the folder is shared with them.
 - `ENGINE_VERSION|V9.21_SERVICE_ACCOUNT_2026-09-03`
 - `DRIVE_AUTH|mode=service_account`
 - `DRIVE_PREFLIGHT|OK|PNG`
+
+
+## V9.22 — Celestrak endpoint, and cooldown back to 15
+
+Every run logged `[warn] TLE not found` for all seven NORAD ids and finished
+with `Done: 0 satellite(s) have tracks`. Celestrak retired `/SATCAT/tle.php`,
+which was the only path `fetch_tle()` knew. Two costs followed: the maps lost
+their ground tracks, and each satellite spent two 30-second timeouts, about six
+minutes of a run doing nothing.
+
+- `TLE_ENDPOINTS` now tries `/NORAD/elements/gp.php?CATNR=<id>&FORMAT=tle`
+  first, the .com host second, and the old `/SATCAT/tle.php` last.
+- The first template that returns a real TLE is remembered and tried first for
+  every later satellite, so only the first one pays for probing. It logs
+  `[tle] using <endpoint>` once.
+- The timeout drops from 30 s to 15 s.
+- If every endpoint fails to answer **and** none has ever worked, Celestrak is
+  treated as unreachable and the remaining satellites are skipped immediately
+  instead of timing out one by one. A body such as `No GP data found` does not
+  trigger this - that means the service answered and only that id is unknown.
+- Warnings now carry the reason, e.g. `(No GP data found)` or
+  `(TimeoutError: timed out)`, so the next failure is diagnosable from the log.
+
+Verified against 7 cases: modern endpoint parsed, remembered endpoint reused
+(1 request instead of 3), old SATCAT path still supported, unknown id does not
+disable the run, unreachable service short-circuits (3 attempts total instead
+of 42), nameless two-line TLE, and an HTML error page rejected.
+
+`COOLDOWN_MINUTES` returns to **15** (still overridable from Streamlit Secrets).
+
+The SGP4 propagation in `build_ground_track()` and the track drawing in
+`draw_panel()` are unchanged.
+
+### Verification markers after deploy
+
+- `ENGINE_VERSION|V9.22_TLE_ENDPOINT_2026-09-03`
+- `[tle] using https://celestrak.org/NORAD/elements/gp.php`
+- `Done: N satellite(s) have tracks.` with N greater than 0
