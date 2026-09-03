@@ -13,6 +13,21 @@ from pathlib import Path
 from typing import Callable
 import streamlit as st
 
+def _env_int(name: str, default: int) -> int:
+    """Read a whole-minute setting from Streamlit Secrets, then the environment."""
+    value = None
+    try:
+        value = st.secrets.get(name, None)
+    except Exception:
+        value = None
+    if value in (None, ""):
+        value = os.getenv(name)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = ROOT / "outputs"
 OUTPUT_DIR.mkdir(exist_ok=True)
@@ -20,7 +35,10 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 STATUS_FILE = OUTPUT_DIR / "run_status.json"
 LOCK_FILE = OUTPUT_DIR / ".forecast.lock"
 LAST_RUN_FILE = OUTPUT_DIR / "last_run.txt"
-COOLDOWN_MINUTES = 15
+# Minutes of rest after a run FINISHES before the next one may start.
+# A dashboard run takes about 8 minutes, so the shortest possible gap between
+# two runs starting is roughly 38 minutes.
+COOLDOWN_MINUTES = int(_env_int("COOLDOWN_MINUTES", 30))
 
 ENGINE_FILE = ROOT / "forecast_engine.py"
 
@@ -28,6 +46,8 @@ def _engine_env() -> dict:
     """Pass required Google Drive secrets from the Streamlit app to the engine subprocess."""
     env = os.environ.copy()
     secret_keys = (
+        "GOOGLE_SERVICE_ACCOUNT_JSON",
+        "GOOGLE_APPLICATION_CREDENTIALS",
         "GOOGLE_CLIENT_ID",
         "GOOGLE_CLIENT_SECRET",
         "GOOGLE_REFRESH_TOKEN",
@@ -35,11 +55,19 @@ def _engine_env() -> dict:
     )
     for key in secret_keys:
         try:
-            value = st.secrets.get(key, "")
+            value = st.secrets.get(key, None)
         except Exception:
-            value = ""
-        if value:
-            env[key] = str(value)
+            value = None
+        if value in (None, ""):
+            continue
+        if not isinstance(value, str):
+            # A service-account key stored as a TOML table arrives as a mapping;
+            # environment variables can only carry strings.
+            try:
+                value = json.dumps(dict(value))
+            except Exception:
+                value = str(value)
+        env[key] = value
     return env
 
 

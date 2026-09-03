@@ -5,11 +5,16 @@ import re
 from typing import Dict, Optional, Tuple
 
 import streamlit as st
-from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 
-DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive"
+from drive_auth import (
+    build_credentials,
+    credentials_available,
+    credentials_mode,
+    secret as _secret,
+)
+
 FOLDER_MIME = "application/vnd.google-apps.folder"
 
 # A finished run folder holds Day 1 to Day 10.
@@ -21,37 +26,21 @@ EXPECTED_DAYS = 10
 MAX_FOLDERS_TO_INSPECT = 12
 
 
-def _secret(name: str) -> str:
-    value = st.secrets.get(name, "")
-    if value is None:
-        return ""
-    return str(value).strip()
-
-
 def drive_is_configured() -> bool:
-    required = (
-        "GOOGLE_CLIENT_ID",
-        "GOOGLE_CLIENT_SECRET",
-        "GOOGLE_REFRESH_TOKEN",
-        "GOOGLE_DRIVE_FOLDER_ID",
-    )
-    return all(_secret(k) for k in required)
+    return bool(_secret("GOOGLE_DRIVE_FOLDER_ID")) and credentials_available()
 
 
 @st.cache_resource(show_spinner=False)
 def get_drive_service():
     if not drive_is_configured():
-        raise RuntimeError("ยังไม่ได้กำหนดค่า OAuth สำหรับ Google Drive ใน Streamlit Secrets")
-
-    creds = Credentials(
-        token=None,
-        refresh_token=_secret("GOOGLE_REFRESH_TOKEN"),
-        token_uri="https://oauth2.googleapis.com/token",
-        client_id=_secret("GOOGLE_CLIENT_ID"),
-        client_secret=_secret("GOOGLE_CLIENT_SECRET"),
-        scopes=[DRIVE_READONLY_SCOPE],
+        raise RuntimeError(
+            "ยังไม่ได้กำหนดค่าการเชื่อมต่อ Google Drive ใน Streamlit Secrets"
+        )
+    return build(
+        "drive", "v3",
+        credentials=build_credentials(),
+        cache_discovery=False,
     )
-    return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 
 def _list_children(parent_id: str):

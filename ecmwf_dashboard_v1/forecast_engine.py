@@ -3,11 +3,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from drive_writer import ensure_run_folder, upload_file
+from drive_auth import credentials_mode
 
 import matplotlib
 matplotlib.use("Agg")
 
-ENGINE_VERSION = "V9.20_OFFLINE_MAPS_2026-09-03"
+ENGINE_VERSION = "V9.21_SERVICE_ACCOUNT_2026-09-03"
 print(f"ENGINE_VERSION|{ENGINE_VERSION}", flush=True)
 
 
@@ -30,6 +31,7 @@ print(
     ),
     flush=True,
 )
+print(f"DRIVE_AUTH|mode={credentials_mode()}", flush=True)
 
 # Two run modes.
 #   dashboard (default) - only the Day 1-Day 10 24-hour products the public

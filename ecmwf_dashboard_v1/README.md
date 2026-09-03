@@ -481,3 +481,67 @@ products towards the ten days.
 
 - `APP_VERSION|V9.17_24HR_ONLY`
 - every map caption must read `24-hour accumulated`, never `3-hour accumulated`
+
+
+## V9.21 — Service account instead of OAuth
+
+An external OAuth app whose publishing status is **Testing** is issued refresh
+tokens that expire after **7 days**, whether or not they are used. This job has
+no human at a browser to re-consent, so OAuth was the wrong credential type for
+it. A service account never expires and needs no consent screen.
+
+New module `drive_auth.py` is the single place credentials are built. Both
+`drive_reader.py` and `drive_writer.py` use it.
+
+Credential resolution order:
+
+1. `GOOGLE_SERVICE_ACCOUNT_JSON` — the key as a JSON string or a TOML table
+2. `GOOGLE_APPLICATION_CREDENTIALS` — path to a key file
+3. the existing `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` /
+   `GOOGLE_REFRESH_TOKEN` trio
+
+The OAuth path is kept so a deployment keeps working until its secrets are
+migrated. `forecast_runner._engine_env()` serialises a TOML-table key to JSON
+before putting it in the subprocess environment. The engine logs
+`DRIVE_AUTH|mode=service_account` (or `oauth`) at startup.
+
+Verified against 8 cases: key from env JSON, key from a Secrets TOML table, a
+private key pasted with literal `\n`, OAuth fallback, service account winning
+over OAuth, missing credentials, malformed JSON, and an incomplete key.
+
+### Setting it up
+
+1. Google Cloud Console -> IAM & Admin -> Service Accounts -> **Create service
+   account** in the same project. No project roles are needed.
+2. On the new account: **Keys -> Add key -> Create new key -> JSON**.
+3. Open the **Shared Drive** in Google Drive -> **Manage members** -> add the
+   service account e-mail (`...@....iam.gserviceaccount.com`) as
+   **Content manager**. Uploads fail without write access.
+4. Confirm the **Google Drive API** is enabled for the project.
+5. Put the key in Streamlit Secrets as a table:
+
+   ```toml
+   GOOGLE_DRIVE_FOLDER_ID = "..."
+
+   [GOOGLE_SERVICE_ACCOUNT_JSON]
+   type = "service_account"
+   project_id = "..."
+   private_key_id = "..."
+   private_key = "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+   client_email = "...@....iam.gserviceaccount.com"
+   client_id = "..."
+   token_uri = "https://oauth2.googleapis.com/token"
+   ```
+
+6. The three OAuth secrets can then be removed.
+
+**The destination must be a real Shared Drive.** Service accounts have no
+storage quota of their own, so uploading into a personal My Drive folder fails
+even when the folder is shared with them.
+
+### Verification markers after deploy
+
+- `APP_VERSION|V9.21_SERVICE_ACCOUNT`
+- `ENGINE_VERSION|V9.21_SERVICE_ACCOUNT_2026-09-03`
+- `DRIVE_AUTH|mode=service_account`
+- `DRIVE_PREFLIGHT|OK|PNG`

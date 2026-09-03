@@ -4,53 +4,24 @@ import mimetypes
 import os
 from pathlib import Path
 
-try:
-    import streamlit as st
-except Exception:  # the scheduled job runs without Streamlit installed
-    st = None
-
-from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
+
+from drive_auth import build_credentials, credentials_mode, secret as _secret
 
 DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
 
 
-def _secret(name: str) -> str:
-    # forecast_engine.py runs as a subprocess. Environment variables are the
-    # primary source there; Streamlit Secrets remain a fallback for app-side use.
-    value = os.getenv(name, "")
-    if value:
-        return str(value).strip()
-    if st is None:
-        return ""
-    try:
-        value = st.secrets.get(name, "")
-    except Exception:
-        value = ""
-    return "" if value is None else str(value).strip()
-
-
 def get_drive_write_service():
-    required = (
-        "GOOGLE_CLIENT_ID",
-        "GOOGLE_CLIENT_SECRET",
-        "GOOGLE_REFRESH_TOKEN",
-        "GOOGLE_DRIVE_FOLDER_ID",
+    if not _secret("GOOGLE_DRIVE_FOLDER_ID"):
+        raise RuntimeError(
+            "Missing Google Drive credentials: GOOGLE_DRIVE_FOLDER_ID"
+        )
+    return build(
+        "drive", "v3",
+        credentials=build_credentials(),
+        cache_discovery=False,
     )
-    missing = [k for k in required if not _secret(k)]
-    if missing:
-        raise RuntimeError(f"Missing Google Drive credentials: {', '.join(missing)}")
-
-    creds = Credentials(
-        token=None,
-        refresh_token=_secret("GOOGLE_REFRESH_TOKEN"),
-        token_uri="https://oauth2.googleapis.com/token",
-        client_id=_secret("GOOGLE_CLIENT_ID"),
-        client_secret=_secret("GOOGLE_CLIENT_SECRET"),
-        scopes=[DRIVE_SCOPE],
-    )
-    return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 
 def _escape_q(s: str) -> str:

@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import streamlit as st
-print("APP_VERSION|V9.20_OFFLINE_MAPS", flush=True)
+print("APP_VERSION|V9.21_SERVICE_ACCOUNT", flush=True)
 
 from forecast_runner import (
     STATUS_FILE,
