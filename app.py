@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import streamlit as st
-print("APP_VERSION|V9.5_STATUS_REFRESH", flush=True)
+print("APP_VERSION|V9.7_GRIB_RETRY", flush=True)
 
 from forecast_runner import (
     STATUS_FILE,
@@ -58,6 +58,18 @@ div[data-testid="stButton"] > button[kind="primary"]:disabled {
     cursor: not-allowed !important;
 }
 </style>
+
+<style>
+/* Equal-size Run and processing-status tools */
+div[data-testid="stButton"] > button {
+    width: 100% !important;
+}
+div[data-testid="stAlert"] {
+    width: 100% !important;
+    box-sizing: border-box !important;
+}
+</style>
+
 """, unsafe_allow_html=True)
 
 
@@ -213,7 +225,7 @@ def render_status(status: dict):
 
     # Easy-to-understand process health.
     if health["health"] == "normal" and running:
-        st.success("ลำดับการทำงานปกติ และยังได้รับสัญญาณจากกระบวนการ")
+        st.success("ลำดับการทำงานปกติ และยังได้รับสัญญาณตอบกลับจากระบบประมวลผล")
     elif health["health"] == "warning":
         st.warning(
             "ตรวจพบสถานะที่ควรเฝ้าระวัง: "
@@ -248,10 +260,21 @@ def render_status(status: dict):
     age = health.get("heartbeat_age_seconds")
     if running and age is not None:
         if age < 60:
-            st.caption(f"ได้รับสัญญาณจากกระบวนการล่าสุดเมื่อ {age} วินาทีที่ผ่านมา")
+            st.caption(f"ได้รับสัญญาณจากระบบล่าสุดเมื่อ {age} วินาทีที่ผ่านมา")
         else:
             mins = age // 60
-            st.caption(f"ได้รับสัญญาณจากกระบวนการล่าสุดประมาณ {mins} นาทีที่ผ่านมา")
+            st.caption(f"ได้รับสัญญาณจากระบบล่าสุดประมาณ {mins} นาทีที่ผ่านมา")
+
+
+
+def show_forecast_map(image, caption=None):
+    """Show forecast maps centered at 90% dashboard width."""
+    _, center, _ = st.columns([0.05, 0.90, 0.05], gap=None)
+    with center:
+        if caption:
+            st.image(image, width="stretch", caption=caption)
+        else:
+            st.image(image, width="stretch")
 
 
 def display_local_maps() -> bool:
@@ -267,7 +290,7 @@ def display_local_maps() -> bool:
         label_visibility="collapsed",
         key="local_days",
     )
-    st.image(str(images[selected]), width="stretch")
+    show_forecast_map(str(images[selected]))
     return True
 
 
@@ -298,7 +321,7 @@ def display_private_drive_maps() -> bool:
 
     try:
         image_bytes = download_drive_file(metadata["id"])
-        st.image(image_bytes, width="stretch", caption=metadata.get("name", ""))
+        show_forecast_map(image_bytes, caption=metadata.get("name", ""))
     except Exception as exc:
         st.error(f"ไม่สามารถดาวน์โหลดภาพจาก Google Drive ได้: {exc}")
         return False
@@ -320,16 +343,11 @@ st.markdown(
 
 @st.fragment(run_every="10s")
 def status_auto_refresh():
-    """Refresh process-status data every 10 seconds while a forecast run is active."""
+    """Check process status every 10 seconds without adding visible dashboard text."""
     current = load_status()
     active = bool(current.get("running")) or LOCK_FILE.exists()
     if active:
-        # Reading these values on each fragment tick keeps Streamlit's status
-        # view synchronized without starting another forecast process.
         _ = status_health(current)
-        st.caption("สถานะระบบตรวจสอบอัตโนมัติทุก 10 วินาที")
-    else:
-        st.caption("สถานะระบบพร้อมใช้งาน")
 
 # Recover only a clearly stale (>45 min) lock.
 clear_stale_lock_if_safe()
@@ -341,7 +359,7 @@ remaining = cooldown_remaining()
 in_cooldown = remaining > 0
 disable_run = is_running or in_cooldown
 
-left, right = st.columns([1, 2])
+left, right = st.columns([1, 1])
 
 with left:
     run_clicked = st.button(
@@ -433,4 +451,3 @@ if not shown:
     )
 
 st.divider()
-st.caption("Dashboard แสดงเฉพาะข้อมูลปริมาณฝนสะสม 24 ชั่วโมง Day 1–Day 10")

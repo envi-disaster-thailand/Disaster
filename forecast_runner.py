@@ -275,7 +275,7 @@ def status_health(status: dict | None = None) -> dict:
         if not result["anomaly"]:
             result["anomaly"] = (
                 f"ไม่พบการอัปเดตนานกว่า {STALE_WARNING_MINUTES} นาที "
-                "แต่จะไม่ยกเลิกงานหาก Process ยังมีชีวิตอยู่"
+                "แต่จะไม่ถูกยกเลิกงานหาก Process ยังทำงานอยู่"
             )
 
     lock_age = _lock_age_minutes()
