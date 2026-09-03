@@ -24,6 +24,15 @@ def status(step: int, progress: int, message: str):
     print(f"STATUS|{step}|{progress}|{message}", flush=True)
 
 status(1, 5, "Preparing system...")
+print(
+    "DRIVE_ENV|client_id={}|client_secret={}|refresh_token={}|folder_id={}".format(
+        bool(os.getenv("GOOGLE_CLIENT_ID")),
+        bool(os.getenv("GOOGLE_CLIENT_SECRET")),
+        bool(os.getenv("GOOGLE_REFRESH_TOKEN")),
+        bool(os.getenv("GOOGLE_DRIVE_FOLDER_ID")),
+    ),
+    flush=True,
+)
 
 import os, warnings
 warnings.filterwarnings('ignore')
@@ -191,6 +200,7 @@ print(f'3h file size     : {os.path.getsize(GRIB_FILE_3H)/1e6:.1f} MB')
 
 
 status(3, 30, "Reading and preparing rainfall data...")
+print("DETAIL|STEP3|Reached GRIB preparation section; decoder setup begins now.", flush=True)
 
 def load_grib(path, label):
     print(f"DETAIL|STEP3|Opening {label} GRIB: {os.path.basename(path)}", flush=True)

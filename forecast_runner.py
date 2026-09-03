@@ -403,7 +403,7 @@ def run_forecast(callback: Callable | None = None):
 
         _notify(callback, 1, 5, "Preparing system...")
 
-        env = os.environ.copy()
+        env = _engine_env()
         env["DASHBOARD_OUTPUT_DIR"] = str(OUTPUT_DIR)
 
         process = subprocess.Popen(
