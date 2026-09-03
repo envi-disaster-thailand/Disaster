@@ -193,3 +193,13 @@ def download_drive_file(file_id: str) -> bytes:
 def clear_drive_cache():
     find_forecast_sets.clear()
     download_drive_file.clear()
+    # The cached service holds a Credentials object. After the refresh token is
+    # replaced in Secrets, the old one would keep failing until the app process
+    # restarts unless it is dropped here too.
+    get_drive_service.clear()
+
+
+def is_credential_error(exc: Exception) -> bool:
+    """True when Drive refused the stored refresh token itself."""
+    text = str(exc).lower()
+    return "invalid_grant" in text or "expired or revoked" in text

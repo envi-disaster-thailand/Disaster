@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import streamlit as st
-print("APP_VERSION|V9.18_LIVE_DAYS", flush=True)
+print("APP_VERSION|V9.20_OFFLINE_MAPS", flush=True)
 
 from forecast_runner import (
     STATUS_FILE,
@@ -25,6 +25,7 @@ from drive_reader import (
     find_forecast_sets,
     download_drive_file,
     clear_drive_cache,
+    is_credential_error,
     EXPECTED_DAYS,
 )
 
@@ -176,7 +177,7 @@ def _thai_message(message: str | None) -> str | None:
         "Downloading ECMWF forecast...": "กำลังดาวน์โหลดข้อมูลพยากรณ์จาก ECMWF",
         "Reading and preparing rainfall data...": "กำลังเตรียมข้อมูลปริมาณฝน",
         "Loading satellite acquisition plans...": "กำลังนำเข้าข้อมูลแผนการถ่ายภาพดาวเทียม",
-        "Computing satellite ground tracks...": "กำลังคำนวณแนวการเคลื่อนที่ภาคพื้นดินของดาวเทียม",
+        "Computing satellite ground tracks...": "กำลังประมวลผลแนวโคจรของดาวเทียม",
         "Processing 24-hour accumulated rainfall...": "กำลังคำนวณปริมาณฝนสะสม 24 ชั่วโมง",
         "Generating additional 12-hour products...": "กำลังจัดทำผลผลิตเพิ่มเติมช่วง 12 ชั่วโมง",
         "Generating additional 6-hour products...": "กำลังจัดทำผลผลิตเพิ่มเติมช่วง 6 ชั่วโมง",
@@ -300,6 +301,10 @@ def display_local_maps() -> bool:
         key="local_days",
     )
     show_forecast_map(str(images[selected]))
+    st.caption(
+        f"แสดงจากผลการประมวลผลที่เก็บไว้บนเซิร์ฟเวอร์ ({len(images)} วัน) "
+        "เนื่องจากขณะนี้อ่านข้อมูลจาก Google Drive ไม่ได้"
+    )
     return True
 
 
@@ -312,7 +317,14 @@ def display_private_drive_maps() -> bool:
             find_forecast_sets()
         )
     except Exception as exc:
-        st.warning(f"ไม่สามารถเชื่อมต่อ Google Drive ได้: {exc}")
+        if is_credential_error(exc):
+            st.error(
+                "การเชื่อมต่อ Google Drive หมดอายุ — ต้องสร้าง GOOGLE_REFRESH_TOKEN "
+                "ใหม่แล้วอัปเดตใน Streamlit Secrets จึงจะแสดงแผนที่ได้อีกครั้ง "
+                "(ผลการประมวลผลที่ทำไปแล้วยังอยู่ครบใน Google Drive)"
+            )
+        else:
+            st.warning(f"ไม่สามารถเชื่อมต่อ Google Drive ได้: {exc}")
         return False
 
     if not newest_files and not complete_files:

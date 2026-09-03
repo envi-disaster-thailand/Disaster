@@ -7,7 +7,7 @@ from drive_writer import ensure_run_folder, upload_file
 import matplotlib
 matplotlib.use("Agg")
 
-ENGINE_VERSION = "V9.12_STEP3_PREFETCH_2026-09-03"
+ENGINE_VERSION = "V9.20_OFFLINE_MAPS_2026-09-03"
 print(f"ENGINE_VERSION|{ENGINE_VERSION}", flush=True)
 
 
@@ -301,7 +301,11 @@ def to_hours(v, fb):
     except Exception:
         return fb
 
-print("DETAIL|STEP3|Starting GRIB decoding for 24h, 12h, 6h and 3h datasets...", flush=True)
+print(
+    "DETAIL|STEP3|Starting GRIB decoding for "
+    + ("24h, 12h, 6h and 3h datasets..." if FULL_PRODUCTS else "the 24h dataset..."),
+    flush=True,
+)
 da_24h, sdim_24h = load_grib(GRIB_FILE_24H, "24h")
 if FULL_PRODUCTS:
     da_12h, sdim_12h = load_grib(GRIB_FILE_12H, "12h")
@@ -1251,11 +1255,32 @@ _make_contact_sheet(
     ncols=2,
 )
 _export(panels_24h, 'ecmwf_24h_accumulated.png', run_ict)
-for _p in panels_24h:
-    try:
-        Path(_p['fn']).unlink()
-    except FileNotFoundError:
-        pass
+
+if FULL_PRODUCTS:
+    # The full run produces 118 maps; local copies would fill the disk.
+    for _p in panels_24h:
+        try:
+            Path(_p['fn']).unlink()
+        except FileNotFoundError:
+            pass
+else:
+    # Dashboard mode keeps its ten maps on disk (about 3 MB) so the page keeps
+    # working when Google Drive is unreachable or its token has expired.
+    # Only this run's files are kept.
+    _keep = {p['fn'] for p in panels_24h}
+    _removed = 0
+    for _old in Path('.').glob('ecmwf-*hr-day*.png'):
+        if _old.name not in _keep:
+            try:
+                _old.unlink()
+                _removed += 1
+            except OSError:
+                pass
+    print(
+        f"[local] Kept {len(_keep)} day maps for offline display; "
+        f"removed {_removed} from previous runs.",
+        flush=True,
+    )
 
 
 
