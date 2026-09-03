@@ -192,9 +192,11 @@ print(f'3h file size     : {os.path.getsize(GRIB_FILE_3H)/1e6:.1f} MB')
 
 status(3, 30, "Reading and preparing rainfall data...")
 
-def load_grib(path):
+def load_grib(path, label):
+    print(f"DETAIL|STEP3|Opening {label} GRIB: {os.path.basename(path)}", flush=True)
     ds = xr.open_dataset(path, engine='cfgrib',
                          backend_kwargs={'indexpath': ''})
+    print(f"DETAIL|STEP3|Opened {label} GRIB; selecting Thailand rainfall data...", flush=True)
     var = [v for v in ds.data_vars
            if 'tp' in v.lower() or 'precip' in v.lower()][0]
     da = ds[var].sel(
@@ -202,6 +204,11 @@ def load_grib(path):
         longitude=slice(LON_MIN, LON_MAX),
     ) * 1000.0
     step_dim = [d for d in da.dims if 'step' in d][0]
+    print(
+        f"DETAIL|STEP3|Prepared {label}: variable={var}, "
+        f"shape={tuple(da.shape)}, step_dim={step_dim}",
+        flush=True,
+    )
     return da, step_dim
 
 def to_hours(v, fb):
@@ -214,10 +221,12 @@ def to_hours(v, fb):
     except Exception:
         return fb
 
-da_24h, sdim_24h = load_grib(GRIB_FILE_24H)
-da_12h, sdim_12h = load_grib(GRIB_FILE_12H)
-da_6h,  sdim_6h  = load_grib(GRIB_FILE_6H)
-da_3h,  sdim_3h  = load_grib(GRIB_FILE_3H)
+print("DETAIL|STEP3|Starting GRIB decoding for 24h, 12h, 6h and 3h datasets...", flush=True)
+da_24h, sdim_24h = load_grib(GRIB_FILE_24H, "24h")
+da_12h, sdim_12h = load_grib(GRIB_FILE_12H, "12h")
+da_6h,  sdim_6h  = load_grib(GRIB_FILE_6H, "6h")
+da_3h,  sdim_3h  = load_grib(GRIB_FILE_3H, "3h")
+print("DETAIL|STEP3|All GRIB datasets opened successfully; preparing coordinate grids...", flush=True)
 
 lats  = da_24h.latitude.values
 lons  = da_24h.longitude.values

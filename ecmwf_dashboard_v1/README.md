@@ -243,3 +243,15 @@ only for the specific LinearRing/closed-linestring exception.
 - Keeps V9.2 atomic status writes and V9.1 stale recovery.
 - Does not modify `forecast_engine.py`, ECMWF retrieval, rainfall calculations,
   SAR logic, map styling, colors, boundaries, labels, or map dimensions.
+
+
+## V9.4 — ICT render fix
+- Fixes the actual `render_status()` start/update timestamp display lines to ICT.
+- Internal UTC timestamps remain unchanged for heartbeat/cooldown/stale-lock calculations.
+- Keeps V9.2 atomic writes and V9.1 stale recovery unchanged.
+- Does not modify `forecast_runner.py` or `forecast_engine.py`.
+
+## V9.4 — ICT + Step 3 detail
+Adds diagnostic log checkpoints only around the existing Step 3 GRIB opens/selections.
+Look for `DETAIL|STEP3|...` in Streamlit Logs. The ECMWF requests, rainfall
+calculation formulas, SAR logic, and map styling are unchanged.

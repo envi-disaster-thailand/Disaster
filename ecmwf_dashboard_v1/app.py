@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import streamlit as st
-print("APP_VERSION|V9.3_ICT_DISPLAY", flush=True)
+print("APP_VERSION|V9.4_ICT_STEP3_DETAIL", flush=True)
 
 from forecast_runner import (
     STATUS_FILE,
@@ -206,9 +206,9 @@ def render_status(status: dict):
         st.error(f"รายละเอียดข้อผิดพลาด: {status['error']}")
 
     if status.get("started_at"):
-        st.caption(f"เริ่มประมวลผล: {status['started_at']}")
+        st.caption(f"เริ่มประมวลผล: {format_ict(status.get('started_at'))}")
     if status.get("updated_at"):
-        st.caption(f"ปรับปรุงสถานะล่าสุด: {status['updated_at']}")
+        st.caption(f"ปรับปรุงสถานะล่าสุด: {format_ict(status.get('updated_at'))}")
 
     pid = health.get("pid")
     pid_alive = health.get("pid_alive")
