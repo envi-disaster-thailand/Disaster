@@ -189,3 +189,33 @@ Run it on the same Windows machine where `client_secret.json` is stored.
 Then replace only `GOOGLE_REFRESH_TOKEN` in Streamlit Secrets.
 
 Do not commit `client_secret.json`, client secrets, or refresh tokens to GitHub.
+
+
+## V7 final verification markers
+
+After Streamlit reboot, the logs must show:
+
+- `APP_VERSION|V7_FINAL_FIX`
+- after starting a run: `ENGINE_VERSION|V7_FINAL_FIX_2026-08-27`
+- `Shared Drive run folder ready: YYYY-MM-DD_HHMM_ICT`
+- `Export helper ready (Shared Drive streaming mode).`
+
+If the log instead shows `server-side Google Drive credentials`, Streamlit is
+still executing an older `forecast_engine.py`.
+
+V7 retains the original daily map rendering. The Cartopy fix explicitly closes
+the rectangular map boundary used by the existing extent and adds a save retry
+only for the specific LinearRing/closed-linestring exception.
+
+
+## V8 — Process sequence and health monitoring
+
+- One status panel only.
+- Status is visible to every viewer, not only the user who pressed Run.
+- Validates step order and non-decreasing progress.
+- Heartbeat is refreshed from every forecast-engine log line.
+- Warns after 8 minutes without a heartbeat.
+- Detects an obviously stale lock after 45 minutes and can clear it conservatively.
+- Shows plain Thai messages for normal / warning / error process states.
+- While a new run is processing, the map is explicitly identified as the
+  previous completed forecast run.

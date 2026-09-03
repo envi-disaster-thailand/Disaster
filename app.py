@@ -6,14 +6,18 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import streamlit as st
+print("APP_VERSION|V8_STATUS_HEALTH", flush=True)
 
 from forecast_runner import (
     STATUS_FILE,
+    LOCK_FILE,
     LAST_RUN_FILE,
-    lock_is_active,
     COOLDOWN_MINUTES,
+    STALE_WARNING_MINUTES,
     run_forecast,
     get_latest_day_images,
+    status_health,
+    clear_stale_lock_if_safe,
 )
 from drive_reader import (
     drive_is_configured,
@@ -66,7 +70,12 @@ def load_status() -> dict:
             "message": "พร้อมดำเนินการ",
             "progress": 0,
             "updated_at": None,
+            "heartbeat_at": None,
+            "started_at": None,
             "error": None,
+            "health": "normal",
+            "anomaly": None,
+            "detail": None,
         }
     try:
         return json.loads(STATUS_FILE.read_text(encoding="utf-8"))
@@ -74,10 +83,15 @@ def load_status() -> dict:
         return {
             "running": False,
             "step": 0,
-            "message": "พร้อมดำเนินการ",
+            "message": "ไม่สามารถอ่านสถานะล่าสุดได้",
             "progress": 0,
             "updated_at": None,
-            "error": None,
+            "heartbeat_at": None,
+            "started_at": None,
+            "error": "ไฟล์สถานะไม่สมบูรณ์",
+            "health": "error",
+            "anomaly": "ไม่สามารถอ่านลำดับการทำงานจากไฟล์สถานะได้",
+            "detail": None,
         }
 
 
@@ -95,13 +109,35 @@ def cooldown_remaining() -> int:
     return max(0, int((end - datetime.now()).total_seconds()))
 
 
+def _thai_message(message: str | None) -> str | None:
+    translations = {
+        "Preparing system...": "กำลังเตรียมระบบประมวลผล",
+        "Downloading ECMWF forecast...": "กำลังดาวน์โหลดข้อมูลพยากรณ์จาก ECMWF",
+        "Reading and preparing rainfall data...": "กำลังเตรียมข้อมูลปริมาณฝน",
+        "Loading satellite acquisition plans...": "กำลังนำเข้าข้อมูลแผนการถ่ายภาพดาวเทียม",
+        "Computing satellite ground tracks...": "กำลังคำนวณแนวการเคลื่อนที่ภาคพื้นดินของดาวเทียม",
+        "Processing 24-hour accumulated rainfall...": "กำลังคำนวณปริมาณฝนสะสม 24 ชั่วโมง",
+        "Processing completed.": "ประมวลผลข้อมูลเสร็จสมบูรณ์",
+    }
+    if message in translations:
+        return translations[message]
+    if message and message.startswith("Generating Day "):
+        return message.replace("Generating Day ", "กำลังจัดทำแผนที่ Day ").replace(
+            " map with satellite footprints and ground tracks...",
+            " พร้อม Satellite Footprint และ Ground Track"
+        )
+    return message
+
+
 def render_status(status: dict):
+    health = status_health(status)
+
     st.subheader("สถานะการประมวลผล")
 
-    progress = int(status.get("progress", 0))
+    progress = int(status.get("progress", 0) or 0)
     st.progress(max(0, min(progress, 100)) / 100)
 
-    active_step = int(status.get("step", 0))
+    active_step = int(status.get("step", 0) or 0)
     running = bool(status.get("running", False))
 
     for idx, label in enumerate(STEPS, start=1):
@@ -111,19 +147,59 @@ def render_status(status: dict):
             icon = "🔄"
         elif idx == active_step and not running and progress == 100:
             icon = "✅"
+        elif (
+            not running
+            and status.get("error")
+            and idx == active_step
+            and active_step > 0
+        ):
+            icon = "❌"
         else:
             icon = "○"
         st.markdown(f"{icon} **{idx}. {label}**")
 
-    message = status.get("message")
+    message = _thai_message(status.get("message"))
     if message:
-        st.info(message)
+        if health["health"] == "normal":
+            st.info(message)
+        elif health["health"] == "warning":
+            st.warning(message)
+        else:
+            st.error(message)
+
+    # Easy-to-understand process health.
+    if health["health"] == "normal" and running:
+        st.success("ลำดับการทำงานปกติ และยังได้รับสัญญาณจากกระบวนการ")
+    elif health["health"] == "warning":
+        st.warning(
+            "ตรวจพบสถานะที่ควรเฝ้าระวัง: "
+            + (health.get("anomaly") or "กระบวนการอัปเดตช้ากว่าปกติ")
+        )
+    elif health["health"] == "error":
+        st.error(
+            "ตรวจพบความผิดปกติของกระบวนการ: "
+            + (health.get("anomaly") or status.get("error") or "ไม่ทราบสาเหตุ")
+        )
+
+    detail = status.get("detail")
+    if detail and detail != status.get("message"):
+        st.caption(f"กิจกรรมล่าสุด: {detail}")
 
     if status.get("error"):
-        st.error(status["error"])
+        st.error(f"รายละเอียดข้อผิดพลาด: {status['error']}")
 
+    if status.get("started_at"):
+        st.caption(f"เริ่มประมวลผล: {status['started_at']}")
     if status.get("updated_at"):
         st.caption(f"ปรับปรุงสถานะล่าสุด: {status['updated_at']}")
+
+    age = health.get("heartbeat_age_seconds")
+    if running and age is not None:
+        if age < 60:
+            st.caption(f"ได้รับสัญญาณจากกระบวนการล่าสุดเมื่อ {age} วินาทีที่ผ่านมา")
+        else:
+            mins = age // 60
+            st.caption(f"ได้รับสัญญาณจากกระบวนการล่าสุดประมาณ {mins} นาทีที่ผ่านมา")
 
 
 def display_local_maps() -> bool:
@@ -139,7 +215,7 @@ def display_local_maps() -> bool:
         label_visibility="collapsed",
         key="local_days",
     )
-    st.image(str(images[selected]), width='stretch')
+    st.image(str(images[selected]), width="stretch")
     return True
 
 
@@ -170,23 +246,16 @@ def display_private_drive_maps() -> bool:
 
     try:
         image_bytes = download_drive_file(metadata["id"])
-        st.image(
-            image_bytes,
-            width='stretch',
-            caption=metadata.get("name", ""),
-        )
+        st.image(image_bytes, width="stretch", caption=metadata.get("name", ""))
     except Exception as exc:
         st.error(f"ไม่สามารถดาวน์โหลดภาพจาก Google Drive ได้: {exc}")
         return False
 
     if folder:
         st.caption(
-            f"ชุดข้อมูลล่าสุดจาก Google Drive: {folder.get('name','')} "
+            f"ชุดข้อมูลที่กำลังแสดง: {folder.get('name','')} "
             f"• ปรับปรุง {folder.get('modifiedTime','')}"
         )
-    else:
-        st.caption("แสดงผลจากโฟลเดอร์ Google Drive ที่กำหนด")
-
     return True
 
 
@@ -196,8 +265,12 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# Recover only a clearly stale (>45 min) lock.
+clear_stale_lock_if_safe()
+
 status = load_status()
-is_running = bool(status.get("running", False)) or lock_is_active()
+health = status_health(status)
+is_running = bool(status.get("running", False)) or LOCK_FILE.exists()
 remaining = cooldown_remaining()
 in_cooldown = remaining > 0
 disable_run = is_running or in_cooldown
@@ -208,13 +281,18 @@ with left:
     run_clicked = st.button(
         "▶ ดำเนินการประมวลผลข้อมูล",
         type="primary",
-        width='stretch',
+        width="stretch",
         disabled=disable_run,
     )
 
 with right:
     if is_running:
-        st.warning("ระบบกำลังประมวลผลข้อมูล ไม่สามารถดำเนินการซ้ำในขณะนี้")
+        if health["health"] == "normal":
+            st.warning("ระบบกำลังประมวลผลข้อมูล ไม่สามารถดำเนินการซ้ำในขณะนี้")
+        elif health["health"] == "warning":
+            st.warning("ระบบยังอยู่ระหว่างประมวลผล แต่ตรวจพบการอัปเดตที่ล่าช้าหรือผิดลำดับ")
+        else:
+            st.error("ตรวจพบสถานะการประมวลผลผิดปกติ กรุณาตรวจสอบรายละเอียดด้านล่าง")
     elif in_cooldown:
         minutes, seconds = divmod(remaining, 60)
         st.info(
@@ -223,13 +301,29 @@ with right:
         )
     elif status.get("progress") == 100 and not status.get("error"):
         st.success("การประมวลผลข้อมูลล่าสุดเสร็จสมบูรณ์")
+    elif status.get("error"):
+        st.error("การประมวลผลครั้งล่าสุดไม่สำเร็จ กรุณาดูสถานะด้านล่าง")
     else:
         st.caption("สามารถดำเนินการประมวลผลได้โดยไม่ต้องเข้าสู่ระบบ")
+
+
+# ONE status panel only. It is visible to every viewer, not only the person
+# who pressed Run.
+if (
+    is_running
+    or status.get("progress", 0) > 0
+    or status.get("error")
+    or status.get("anomaly")
+):
+    render_status(status)
+
 
 if run_clicked:
     status_area = st.empty()
 
     def callback(step: int, progress: int, message: str):
+        # Update the same conceptual status panel during this session.
+        # The persistent status file lets other users see the same state.
         with status_area.container():
             render_status(load_status())
 
@@ -241,16 +335,25 @@ if run_clicked:
         st.rerun()
     except Exception as exc:
         st.error(f"เกิดข้อผิดพลาดในการประมวลผล: {exc}")
+        time.sleep(0.5)
+        st.rerun()
 
 
 st.divider()
 st.header("ปริมาณฝนสะสม 24 ชั่วโมง")
+
+# Make it explicit when maps are from the previous completed run.
+if is_running:
+    st.info(
+        "กำลังประมวลผลข้อมูลรอบใหม่ แผนที่ด้านล่างเป็นผลจากรอบที่เสร็จสมบูรณ์ล่าสุด "
+        "และจะเปลี่ยนเป็นรอบใหม่เมื่อจัดทำผลครบถ้วน"
+    )
+
 st.caption(
     "แสดงผลแผนที่พยากรณ์พร้อม Satellite Footprint และ Ground Track "
     "ตามผลผลิตจากกระบวนการประมวลผล"
 )
 
-# Dashboard displays only private Shared Drive 24-hour Day 1-Day 10 products.
 shown = display_private_drive_maps()
 if not shown:
     shown = display_local_maps()
