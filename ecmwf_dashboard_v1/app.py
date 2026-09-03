@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import streamlit as st
-print("APP_VERSION|V9.14_DRIVE_SET_COMPLETE", flush=True)
+print("APP_VERSION|V9.17_24HR_ONLY", flush=True)
 
 from forecast_runner import (
     STATUS_FILE,

@@ -78,9 +78,21 @@ def _list_children(parent_id: str):
     return items
 
 
+# All four product sets use the same "dayN" token in their filenames:
+#   ecmwf-24hr-day1-...   the Day 1-Day 10 maps this dashboard shows
+#   ecmwf-12hr-day1-...   ecmwf-06hr-day1-...   ecmwf-03hr-day1-...
+# The 3-hour set is uploaded last, so matching on "dayN" alone picked the
+# newest file for each day and displayed a 3-hour map under the 24-hour
+# heading. The 24-hour marker is required.
+DAY_FILE_RE = re.compile(
+    r"(?:^|[-_])24-?hr?[-_]?day[\s_-]?(\d{1,2})(?:[-_.]|$)",
+    flags=re.I,
+)
+
+
 def _extract_day(name: str) -> Optional[int]:
-    # Supports the notebook naming pattern, e.g. ecmwf-24hr-day6-...
-    m = re.search(r"(?:^|[-_])day[\s_-]?(\d{1,2})(?:[-_.]|$)", name, flags=re.I)
+    """Day number of a 24-hour accumulation map, or None for anything else."""
+    m = DAY_FILE_RE.search(name)
     if not m:
         return None
     day = int(m.group(1))
