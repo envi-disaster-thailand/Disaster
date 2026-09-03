@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 import time
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import streamlit as st
-print("APP_VERSION|V9.1_STALE_RECOVERY", flush=True)
+print("APP_VERSION|V9.5_STATUS_REFRESH", flush=True)
 
 from forecast_runner import (
     STATUS_FILE,
@@ -32,6 +33,33 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed",
 )
+st.markdown("""
+<style>
+div[data-testid="stButton"] > button[kind="primary"]:not(:disabled) {
+    background-color: #2E7D5B !important;
+    border-color: #2E7D5B !important;
+    color: #FFFFFF !important;
+}
+div[data-testid="stButton"] > button[kind="primary"]:not(:disabled):hover {
+    background-color: #25684B !important;
+    border-color: #25684B !important;
+    color: #FFFFFF !important;
+}
+div[data-testid="stButton"] > button[kind="primary"]:not(:disabled):focus {
+    background-color: #2E7D5B !important;
+    border-color: #2E7D5B !important;
+    color: #FFFFFF !important;
+}
+div[data-testid="stButton"] > button[kind="primary"]:disabled {
+    background-color: #F0F2F6 !important;
+    border-color: #D9DDE3 !important;
+    color: #A3A8B0 !important;
+    opacity: 1 !important;
+    cursor: not-allowed !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 
 st.markdown(
     """
@@ -61,6 +89,22 @@ STEPS = [
     "บันทึกผลการประมวลผล",
 ]
 
+
+
+ICT = ZoneInfo("Asia/Bangkok")
+UTC = ZoneInfo("UTC")
+
+def format_ict(dt_text):
+    """Convert stored UTC/ISO status timestamps to Thailand ICT for display only."""
+    if not dt_text:
+        return "-"
+    try:
+        dt = datetime.fromisoformat(str(dt_text))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return dt.astimezone(ICT).strftime("%Y-%m-%d %H:%M:%S ICT")
+    except Exception:
+        return str(dt_text)
 
 def load_status() -> dict:
     if not STATUS_FILE.exists():
@@ -189,9 +233,9 @@ def render_status(status: dict):
         st.error(f"รายละเอียดข้อผิดพลาด: {status['error']}")
 
     if status.get("started_at"):
-        st.caption(f"เริ่มประมวลผล: {status['started_at']}")
+        st.caption(f"เริ่มประมวลผล: {format_ict(status.get('started_at'))}")
     if status.get("updated_at"):
-        st.caption(f"ปรับปรุงสถานะล่าสุด: {status['updated_at']}")
+        st.caption(f"ปรับปรุงสถานะล่าสุด: {format_ict(status.get('updated_at'))}")
 
     pid = health.get("pid")
     pid_alive = health.get("pid_alive")
@@ -273,6 +317,20 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+
+@st.fragment(run_every="10s")
+def status_auto_refresh():
+    """Refresh process-status data every 10 seconds while a forecast run is active."""
+    current = load_status()
+    active = bool(current.get("running")) or LOCK_FILE.exists()
+    if active:
+        # Reading these values on each fragment tick keeps Streamlit's status
+        # view synchronized without starting another forecast process.
+        _ = status_health(current)
+        st.caption("สถานะระบบตรวจสอบอัตโนมัติทุก 10 วินาที")
+    else:
+        st.caption("สถานะระบบพร้อมใช้งาน")
+
 # Recover only a clearly stale (>45 min) lock.
 clear_stale_lock_if_safe()
 
@@ -348,6 +406,8 @@ if run_clicked:
 
 
 st.divider()
+status_auto_refresh()
+
 st.header("ปริมาณฝนสะสม 24 ชั่วโมง")
 
 # Make it explicit when maps are from the previous completed run.

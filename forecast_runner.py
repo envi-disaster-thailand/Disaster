@@ -4,6 +4,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -64,13 +65,37 @@ def _status_started_at(previous: dict | None = None) -> str:
     return previous.get("started_at") or _now()
 
 
-def _write_payload(payload: dict):
-    tmp = STATUS_FILE.with_suffix(".tmp")
-    tmp.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
+def _write_payload(payload: dict) -> None:
+    """
+    Atomically write status using a unique temporary file per writer.
+
+    Streamlit may execute multiple sessions/reruns concurrently. A fixed
+    run_status.tmp filename allows one writer to rename another writer's
+    temporary file, causing FileNotFoundError. mkstemp gives every writer
+    its own file; os.replace then atomically publishes the completed JSON.
+    """
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{STATUS_FILE.name}.",
+        suffix=".tmp",
+        dir=str(OUTPUT_DIR),
     )
-    tmp.replace(STATUS_FILE)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+
+        os.replace(tmp_name, STATUS_FILE)
+    finally:
+        # os.replace removes tmp_name on success. This only cleans up after
+        # an exception before publication.
+        try:
+            if os.path.exists(tmp_name):
+                os.unlink(tmp_name)
+        except OSError:
+            pass
 
 
 def _write_status(
