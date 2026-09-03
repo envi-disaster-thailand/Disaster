@@ -264,3 +264,22 @@ calculation formulas, SAR logic, and map styling are unchanged.
 - Ready Run button remains green; disabled/running button remains gray.
 - ICT display and Step 3 diagnostic logs remain included.
 - `forecast_engine.py` and `forecast_runner.py` are unchanged.
+
+
+## V9.6 — UI cleanup
+- Keeps the automatic 10-second status check but hides its explanatory dashboard caption.
+- Changes process-health wording to use "ระบบประมวลผล" and heartbeat wording to "ระบบล่าสุด".
+- Removes the bottom "Dashboard แสดงเฉพาะ..." caption.
+- Makes the Run tool and processing-status tool equal-width columns.
+- Displays forecast maps at 90% of the prior dashboard width, centered.
+- Generated map PNG files and map styling are unchanged.
+- `forecast_engine.py` and `forecast_runner.py` are unchanged.
+
+
+## V9.7 — GRIB Step-3 retry protection
+- Adds a 180-second timeout around each individual 24h/12h/6h/3h cfgrib open.
+- Retries a failed/timed-out GRIB open once (2 attempts total), with a 3-second pause.
+- Removes stale cfgrib `.idx` sidecars before each attempt.
+- Uses `backend_kwargs={"indexpath": ""}` to avoid persistent cfgrib index files.
+- Adds detailed `DETAIL|STEP3|...` logs for attempt number, timeout, retry, and success/failure.
+- Does not change ECMWF request steps, rainfall calculations, SAR logic, generated map styling, or output naming.

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import signal
+import time
 from pathlib import Path
 import streamlit as st
 from drive_writer import ensure_run_folder, upload_file
@@ -8,7 +10,7 @@ from drive_writer import ensure_run_folder, upload_file
 import matplotlib
 matplotlib.use("Agg")
 
-print("ENGINE_VERSION|V7_FINAL_FIX_2026-08-27", flush=True)
+print("ENGINE_VERSION|V9.7_GRIB_RETRY_2026-09-03", flush=True)
 
 ENGINE_VERSION = "V7_FINAL_FIX_2026-08-27"
 print(f"ENGINE_VERSION|{ENGINE_VERSION}", flush=True)
@@ -220,6 +222,96 @@ def to_hours(v, fb):
         return int(v / np.timedelta64(1, 'h'))
     except Exception:
         return fb
+
+
+class _GribOpenTimeout(Exception):
+    pass
+
+
+def _grib_alarm_handler(signum, frame):
+    raise _GribOpenTimeout("GRIB open timed out")
+
+
+def open_grib_with_retry(path, label, timeout_seconds=180, retries=2):
+    """
+    Open one ECMWF GRIB dataset with bounded wait + retry.
+
+    Important:
+    - Keeps the same xarray/cfgrib decoding path and rainfall data.
+    - indexpath="" avoids persistent cfgrib .idx files on ephemeral Streamlit storage.
+    - On Linux, SIGALRM prevents an individual xr.open_dataset() call from waiting forever.
+    - If an attempt fails/times out, any stale .idx sidecars are removed before retry.
+    """
+    path = str(path)
+    last_error = None
+
+    for attempt in range(1, retries + 1):
+        print(
+            f"DETAIL|STEP3|Opening {label} GRIB "
+            f"(attempt {attempt}/{retries}, timeout={timeout_seconds}s): {Path(path).name}",
+            flush=True,
+        )
+
+        # Remove stale cfgrib index sidecars before every attempt.
+        for idx in Path(path).parent.glob(Path(path).name + "*.idx"):
+            try:
+                idx.unlink()
+                print(f"DETAIL|STEP3|Removed stale cfgrib index: {idx.name}", flush=True)
+            except Exception as exc:
+                print(f"DETAIL|STEP3|Could not remove index {idx.name}: {exc}", flush=True)
+
+        old_handler = None
+        alarm_enabled = hasattr(signal, "SIGALRM")
+        try:
+            if alarm_enabled:
+                old_handler = signal.signal(signal.SIGALRM, _grib_alarm_handler)
+                signal.alarm(timeout_seconds)
+
+            ds = xr.open_dataset(
+                path,
+                engine="cfgrib",
+                backend_kwargs={"indexpath": ""},
+            )
+
+            if alarm_enabled:
+                signal.alarm(0)
+
+            print(
+                f"DETAIL|STEP3|Opened {label} GRIB successfully on attempt {attempt}/{retries}",
+                flush=True,
+            )
+            return ds
+
+        except Exception as exc:
+            last_error = exc
+            if alarm_enabled:
+                signal.alarm(0)
+
+            kind = "TIMEOUT" if isinstance(exc, _GribOpenTimeout) else type(exc).__name__
+            print(
+                f"DETAIL|STEP3|{label} GRIB attempt {attempt}/{retries} failed: "
+                f"{kind}: {exc}",
+                flush=True,
+            )
+
+            if attempt < retries:
+                print(
+                    f"DETAIL|STEP3|Retrying {label} GRIB in 3 seconds...",
+                    flush=True,
+                )
+                time.sleep(3)
+
+        finally:
+            if alarm_enabled and old_handler is not None:
+                try:
+                    signal.signal(signal.SIGALRM, old_handler)
+                except Exception:
+                    pass
+
+    raise RuntimeError(
+        f"Unable to open {label} GRIB after {retries} attempts. Last error: {last_error}"
+    )
+
 
 print("DETAIL|STEP3|Starting GRIB decoding for 24h, 12h, 6h and 3h datasets...", flush=True)
 da_24h, sdim_24h = load_grib(GRIB_FILE_24H, "24h")
