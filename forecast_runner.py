@@ -9,7 +9,6 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
-import hashlib
 
 ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = ROOT / "outputs"
@@ -21,17 +20,6 @@ LAST_RUN_FILE = OUTPUT_DIR / "last_run.txt"
 COOLDOWN_MINUTES = 15
 
 ENGINE_FILE = ROOT / "forecast_engine.py"
-
-def _engine_sha256(path: Path = ENGINE_FILE) -> str:
-    try:
-        h = hashlib.sha256()
-        with open(path, "rb") as f:
-            for chunk in iter(lambda: f.read(1024 * 1024), b""):
-                h.update(chunk)
-        return h.hexdigest()
-    except Exception as exc:
-        return f"ERROR:{type(exc).__name__}:{exc}"
-
 
 # A status is considered suspicious when no heartbeat has been received for
 # this long. It is a warning first; it does not automatically kill the job.
@@ -398,11 +386,6 @@ def run_forecast(callback: Callable | None = None):
         env = os.environ.copy()
         env["DASHBOARD_OUTPUT_DIR"] = str(OUTPUT_DIR)
 
-        process = print(f"RUNNER|Python: {sys.executable}", flush=True)
-        process = print(f"RUNNER|Engine: {ENGINE_FILE.resolve()}", flush=True)
-        process = print(f"RUNNER|Engine SHA256: {_engine_sha256()}", flush=True)
-        process = print(f"RUNNER|Working directory: {ROOT.resolve()}", flush=True)
-        process = print(f"RUNNER|Engine exists: {ENGINE_FILE.exists()}", flush=True)
         process = subprocess.Popen(
             [sys.executable, "-u", str(ENGINE_FILE)],
             cwd=str(ROOT),
