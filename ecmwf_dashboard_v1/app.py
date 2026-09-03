@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import streamlit as st
-print("APP_VERSION|V9.4_ICT_STEP3_DETAIL", flush=True)
+print("APP_VERSION|V9.4_GREEN_BUTTON", flush=True)
 
 from forecast_runner import (
     STATUS_FILE,
@@ -33,6 +33,26 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed",
 )
+st.markdown("""
+<style>
+div[data-testid="stButton"] > button[kind="primary"] {
+    background-color: #2E7D5B !important;
+    border-color: #2E7D5B !important;
+    color: #FFFFFF !important;
+}
+div[data-testid="stButton"] > button[kind="primary"]:hover {
+    background-color: #25684B !important;
+    border-color: #25684B !important;
+    color: #FFFFFF !important;
+}
+div[data-testid="stButton"] > button[kind="primary"]:focus {
+    background-color: #2E7D5B !important;
+    border-color: #2E7D5B !important;
+    color: #FFFFFF !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 
 st.markdown(
     """
