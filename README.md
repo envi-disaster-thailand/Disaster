@@ -219,3 +219,10 @@ only for the specific LinearRing/closed-linestring exception.
 - Shows plain Thai messages for normal / warning / error process states.
 - While a new run is processing, the map is explicitly identified as the
   previous completed forecast run.
+
+
+## V9.1 — legacy stale-state recovery
+- Recovers V8/older `running=True` status with no `engine_pid` after 45 minutes without heartbeat.
+- Removes the stale lock and marks the old run as stopped so the Run button is enabled.
+- Keeps the V9 PID-aware behavior for new runs.
+- Does not modify `forecast_engine.py`, ECMWF retrieval, rainfall calculations, or map styling.

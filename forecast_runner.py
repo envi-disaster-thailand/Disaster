@@ -194,7 +194,7 @@ def _lock_age_minutes() -> float | None:
 
 
 def status_health(status: dict | None = None) -> dict:
-    """Assess heartbeat, sequence, lock age, and the actual child PID."""
+    """Assess heartbeat, sequence, lock age, child PID, and legacy stale state."""
     status = status or _read_status()
     result = {
         "health": status.get("health", "normal"),
@@ -202,6 +202,7 @@ def status_health(status: dict | None = None) -> dict:
         "stale": False,
         "lock_stale": False,
         "process_dead": False,
+        "legacy_stale": False,
         "heartbeat_age_seconds": None,
         "pid": status.get("engine_pid"),
         "pid_alive": None,
@@ -221,11 +222,25 @@ def status_health(status: dict | None = None) -> dict:
         except Exception:
             pass
 
+    # Strong evidence: a recorded child PID no longer exists.
     if status.get("running") and pid is not None and result["pid_alive"] is False:
         result["process_dead"] = True
         result["health"] = "error"
         result["anomaly"] = (
             "ไม่พบกระบวนการประมวลผลเดิมแล้ว แต่สถานะยังค้างว่า Running"
+        )
+        return result
+
+    # Recovery for V8/older status files: running=True, no engine_pid, and
+    # heartbeat has been silent longer than the hard stale threshold.
+    if (status.get("running") and pid is None and age is not None
+            and age > STALE_LOCK_MINUTES * 60):
+        result["legacy_stale"] = True
+        result["lock_stale"] = True
+        result["health"] = "error"
+        result["anomaly"] = (
+            f"พบสถานะงานเดิมที่ไม่มี Process ID และไม่มีการอัปเดตนานกว่า "
+            f"{STALE_LOCK_MINUTES} นาที ระบบจะปลด Lock ของงานเดิม"
         )
         return result
 
@@ -254,31 +269,40 @@ def status_health(status: dict | None = None) -> dict:
     return result
 
 def clear_stale_lock_if_safe() -> bool:
-    """Clear only a lock whose recorded process is demonstrably gone."""
+    """Clear only a lock/state whose process is demonstrably gone or legacy-stale."""
     status = _read_status()
     health = status_health(status)
     lock_age = _lock_age_minutes()
 
     should_clear = (
         health.get("process_dead")
+        or health.get("legacy_stale")
         or health.get("lock_stale")
-        or (LOCK_FILE.exists() and not status.get("running")
-            and lock_age is not None and lock_age > 1)
+        or (
+            LOCK_FILE.exists()
+            and not status.get("running")
+            and lock_age is not None
+            and lock_age > 1
+        )
     )
     if not should_clear:
         return False
 
+    LOCK_FILE.unlink(missing_ok=True)
+
+    # Convert the stale old run into a completed-abnormal state so app.py
+    # no longer disables the Run button.
     _write_status(
         running=False,
         step=int(status.get("step", 0) or 0),
         progress=int(status.get("progress", 0) or 0),
-        message="ตรวจพบงานเดิมหยุดทำงานและปลด Lock แล้ว",
-        error=status.get("error"),
-        health="error",
-        anomaly=health.get("anomaly") or "ตรวจพบ Lock ของงานเดิมค้าง",
-        detail=status.get("detail"),
+        message="งานเดิมหยุดทำงาน ระบบปลด Lock แล้ว สามารถเริ่มประมวลผลใหม่ได้",
+        error=None,
+        health="warning",
+        anomaly=health.get("anomaly") or "ตรวจพบ Lock/สถานะของงานเดิมค้าง",
+        detail="STALE_STATE_RECOVERED",
+        engine_pid=None,
     )
-    LOCK_FILE.unlink(missing_ok=True)
     return True
 
 def run_forecast(callback: Callable | None = None):
