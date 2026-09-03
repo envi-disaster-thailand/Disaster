@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import streamlit as st
-print("APP_VERSION|V9.17_24HR_ONLY", flush=True)
+print("APP_VERSION|V9.18_LIVE_DAYS", flush=True)
 
 from forecast_runner import (
     STATUS_FILE,
@@ -22,9 +22,10 @@ from forecast_runner import (
 )
 from drive_reader import (
     drive_is_configured,
-    find_latest_forecast_set,
+    find_forecast_sets,
     download_drive_file,
     clear_drive_cache,
+    EXPECTED_DAYS,
 )
 
 st.set_page_config(
@@ -307,13 +308,33 @@ def display_private_drive_maps() -> bool:
         return False
 
     try:
-        folder, files = find_latest_forecast_set()
+        newest_folder, newest_files, complete_folder, complete_files = (
+            find_forecast_sets()
+        )
     except Exception as exc:
         st.warning(f"ไม่สามารถเชื่อมต่อ Google Drive ได้: {exc}")
         return False
 
-    if not files:
+    if not newest_files and not complete_files:
         return False
+
+    # Show the newest run as it is being built, one day at a time.
+    folder, files = (newest_folder, newest_files) if newest_files else (
+        complete_folder, complete_files
+    )
+    partial = 0 < len(files) < EXPECTED_DAYS
+
+    if partial:
+        st.info(
+            f"รอบล่าสุดกำลังจัดทำ — ขณะนี้มี Day {len(files)} จาก {EXPECTED_DAYS} วัน "
+            "แผนที่จะเพิ่มขึ้นเองโดยไม่ต้องรีเฟรช"
+        )
+        if complete_files and st.checkbox(
+            "ดูรอบที่เสร็จสมบูรณ์ล่าสุดแทน (ครบ 10 วัน)",
+            key="prefer_complete_set",
+        ):
+            folder, files = complete_folder, complete_files
+            partial = False
 
     available_days = sorted(files.keys())
     labels = [f"Day {d}" for d in available_days]
@@ -333,12 +354,6 @@ def display_private_drive_maps() -> bool:
     except Exception as exc:
         st.error(f"ไม่สามารถดาวน์โหลดภาพจาก Google Drive ได้: {exc}")
         return False
-
-    if folder and folder.get("complete") is False:
-        st.info(
-            f"ชุดข้อมูลล่าสุดยังจัดทำไม่ครบ Day 1–Day 10 "
-            f"(ขณะนี้มี {len(files)} วัน) ระบบแสดงเท่าที่จัดทำแล้ว"
-        )
 
     if folder:
         st.caption(
@@ -451,26 +466,26 @@ st.divider()
 
 st.header("ปริมาณฝนสะสม 24 ชั่วโมง")
 
-# Make it explicit when maps are from the previous completed run.
-if is_running:
-    st.info(
-        "กำลังประมวลผลข้อมูลรอบใหม่ แผนที่ด้านล่างเป็นผลจากรอบที่เสร็จสมบูรณ์ล่าสุด "
-        "และจะเปลี่ยนเป็นรอบใหม่เมื่อจัดทำผลครบถ้วน"
+
+@st.fragment(run_every="30s")
+def forecast_maps_section():
+    """Re-check Drive every 30 seconds so new days appear on their own."""
+    st.caption(
+        "แสดงผลแผนที่พยากรณ์พร้อม Satellite Footprint และ Ground Track "
+        "ตามผลผลิตจากกระบวนการประมวลผล"
     )
 
-st.caption(
-    "แสดงผลแผนที่พยากรณ์พร้อม Satellite Footprint และ Ground Track "
-    "ตามผลผลิตจากกระบวนการประมวลผล"
-)
+    shown = display_private_drive_maps()
+    if not shown:
+        shown = display_local_maps()
 
-shown = display_private_drive_maps()
-if not shown:
-    shown = display_local_maps()
+    if not shown:
+        st.info(
+            "ยังไม่พบผลการพยากรณ์ปริมาณฝนสะสม 24 ชั่วโมง "
+            "กรุณาดำเนินการประมวลผลข้อมูล"
+        )
 
-if not shown:
-    st.info(
-        "ยังไม่พบผลการพยากรณ์ปริมาณฝนสะสม 24 ชั่วโมง "
-        "กรุณาดำเนินการประมวลผลข้อมูล"
-    )
+
+forecast_maps_section()
 
 st.divider()

@@ -450,3 +450,34 @@ minute free allowance, so a daily schedule may overrun it. On a **public**
 repository Actions minutes are free. Check which one this repository is before
 enabling the schedule; running every other day, or only on weekdays
 (`0 9 * * 1-5`), halves the cost.
+
+
+## V9.17 — the dashboard must show 24-hour maps only
+
+All four product sets carry the same `dayN` token:
+
+```
+ecmwf-24hr-day1-...png
+ecmwf-12hr-day1-...png
+ecmwf-06hr-day1-...png
+ecmwf-03hr-day1-...png
+```
+
+`drive_reader._extract_day()` matched on `dayN` alone, and
+`_day_pngs_in_folder()` keeps the newest file for each day. The 3-hour set is
+uploaded last, so it was always the newest and the dashboard displayed a
+3-hour accumulation map under the "24-hour accumulated rainfall" heading -
+reporting far lower rainfall than the 24-hour product it claimed to be.
+
+`DAY_FILE_RE` now requires the 24-hour marker, so 12h / 6h / 3h products and
+the summary contact sheets can no longer be picked up. Verified against 11
+filename cases including `ecmwf_24h_accumulated.png` and day numbers outside
+1-10.
+
+This also fixes the V9.14 completeness check, which had been counting mixed
+products towards the ten days.
+
+### Verification markers after deploy
+
+- `APP_VERSION|V9.17_24HR_ONLY`
+- every map caption must read `24-hour accumulated`, never `3-hour accumulated`

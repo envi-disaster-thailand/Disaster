@@ -118,50 +118,58 @@ def _day_pngs_in_folder(folder_id: str) -> Dict[int, dict]:
     return result
 
 
-@st.cache_data(ttl=60, show_spinner=False)
-def find_latest_forecast_set() -> Tuple[Optional[dict], Dict[int, dict]]:
-    """
-    GOOGLE_DRIVE_FOLDER_ID can point either to:
-      1) the PNG parent containing dated run folders, or
-      2) a folder that directly contains Day 1-Day 10 PNG files.
+@st.cache_data(ttl=30, show_spinner=False)
+def find_forecast_sets():
+    """Return (newest_folder, newest_files, complete_folder, complete_files).
 
-    Returns:
-      latest_folder_metadata (or None for the root itself),
-      {1: file_metadata, ..., 10: file_metadata}
+    newest_*   the most recent folder holding any 24-hour day map, including a
+               run still in progress, so Day 1 is visible as soon as it lands.
+    complete_* the most recent folder holding all ten days.
+
+    They are usually the same folder. While a run is uploading they differ, and
+    the dashboard says which one it is showing.
     """
     root_id = _secret("GOOGLE_DRIVE_FOLDER_ID")
     if not root_id:
-        return None, {}
+        return None, {}, None, {}
 
-    # First: allow root itself to contain the PNG files.
+    # The root folder may hold the day PNGs directly.
     root_files = _day_pngs_in_folder(root_id)
     if len(root_files) >= EXPECTED_DAYS:
-        return None, root_files
+        return None, root_files, None, root_files
 
-    # Otherwise inspect newest child folders. Prefer a complete Day 1-Day 10
-    # set: the newest folder is the one currently being written during a run,
-    # and returning it would show a half-finished forecast as the latest one.
     children = _list_children(root_id)
     folders = [x for x in children if x.get("mimeType") == FOLDER_MIME]
 
-    best_folder = None
-    best_files: Dict[int, dict] = {}
+    newest_folder, newest_files = None, {}
+    complete_folder, complete_files = None, {}
 
     for folder in folders[:MAX_FOLDERS_TO_INSPECT]:
         day_files = _day_pngs_in_folder(folder["id"])
+        if not day_files:
+            continue
+
+        if newest_folder is None:
+            newest_folder = dict(folder, complete=len(day_files) >= EXPECTED_DAYS)
+            newest_files = day_files
+
         if len(day_files) >= EXPECTED_DAYS:
-            return dict(folder, complete=True), day_files
-        if len(day_files) > len(best_files):
-            best_folder, best_files = folder, day_files
+            complete_folder = dict(folder, complete=True)
+            complete_files = day_files
+            break
 
-    # No complete run folder found. Show the most complete thing available so
-    # the page is not empty before the first run has ever finished.
-    if root_files and len(root_files) >= len(best_files):
-        return None, root_files
-    if best_files:
-        return dict(best_folder, complete=False), best_files
+    if not newest_files and root_files:
+        newest_files = root_files
 
-    return None, {}
+    return newest_folder, newest_files, complete_folder, complete_files
+
+
+def find_latest_forecast_set():
+    """Backward-compatible view: the newest complete set, else the newest set."""
+    newest_folder, newest_files, complete_folder, complete_files = find_forecast_sets()
+    if complete_files:
+        return complete_folder, complete_files
+    return newest_folder, newest_files
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -183,5 +191,5 @@ def download_drive_file(file_id: str) -> bytes:
 
 
 def clear_drive_cache():
-    find_latest_forecast_set.clear()
+    find_forecast_sets.clear()
     download_drive_file.clear()
