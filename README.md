@@ -283,3 +283,11 @@ calculation formulas, SAR logic, and map styling are unchanged.
 - Uses `backend_kwargs={"indexpath": ""}` to avoid persistent cfgrib index files.
 - Adds detailed `DETAIL|STEP3|...` logs for attempt number, timeout, retry, and success/failure.
 - Does not change ECMWF request steps, rainfall calculations, SAR logic, generated map styling, or output naming.
+
+
+## V9.8 — Step 3 retry wiring fix
+- Fixes a V9.7 wiring error: `open_grib_with_retry()` existed, but `load_grib()` still called `xr.open_dataset()` directly.
+- `load_grib()` now actually uses the 180-second timeout / 2-attempt retry helper.
+- Adds immediate `DETAIL|STEP3A|...` lines directly after entering Step 3.
+- Logs existence and file size for all four downloaded GRIB inputs before decoding.
+- Does not change ECMWF retrieval, rainfall formula, SAR logic, map styling, or output naming.

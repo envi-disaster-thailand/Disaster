@@ -10,7 +10,7 @@ from drive_writer import ensure_run_folder, upload_file
 import matplotlib
 matplotlib.use("Agg")
 
-print("ENGINE_VERSION|V9.7_GRIB_RETRY_2026-09-03", flush=True)
+print("ENGINE_VERSION|V9.8_STEP3_FIX_2026-09-03", flush=True)
 
 ENGINE_VERSION = "V7_FINAL_FIX_2026-08-27"
 print(f"ENGINE_VERSION|{ENGINE_VERSION}", flush=True)
@@ -193,12 +193,26 @@ print(f'3h file size     : {os.path.getsize(GRIB_FILE_3H)/1e6:.1f} MB')
 
 
 status(3, 30, "Reading and preparing rainfall data...")
+print("DETAIL|STEP3A|Entered Step 3 rainfall preparation.", flush=True)
+for _label, _path in (
+    ("24h", GRIB_FILE_24H),
+    ("12h", GRIB_FILE_12H),
+    ("6h", GRIB_FILE_6H),
+    ("3h", GRIB_FILE_3H),
+):
+    _exists = os.path.exists(_path)
+    _size_mb = (os.path.getsize(_path) / 1e6) if _exists else -1.0
+    print(
+        f"DETAIL|STEP3A|Input {_label}: exists={_exists}, "
+        f"size={_size_mb:.1f} MB, path={os.path.basename(_path)}",
+        flush=True,
+    )
+print("DETAIL|STEP3A|Input-file checks complete.", flush=True)
 
 def load_grib(path, label):
-    print(f"DETAIL|STEP3|Opening {label} GRIB: {os.path.basename(path)}", flush=True)
-    ds = xr.open_dataset(path, engine='cfgrib',
-                         backend_kwargs={'indexpath': ''})
-    print(f"DETAIL|STEP3|Opened {label} GRIB; selecting Thailand rainfall data...", flush=True)
+    print(f"DETAIL|STEP3A|Preparing to open {label} GRIB: {os.path.basename(path)}", flush=True)
+    ds = open_grib_with_retry(path, label, timeout_seconds=180, retries=2)
+    print(f"DETAIL|STEP3A|Selecting Thailand rainfall data from {label} GRIB...", flush=True)
     var = [v for v in ds.data_vars
            if 'tp' in v.lower() or 'precip' in v.lower()][0]
     da = ds[var].sel(
