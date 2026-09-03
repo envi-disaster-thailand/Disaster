@@ -4,7 +4,11 @@ import mimetypes
 import os
 from pathlib import Path
 
-import streamlit as st
+try:
+    import streamlit as st
+except Exception:  # the scheduled job runs without Streamlit installed
+    st = None
+
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
@@ -18,6 +22,8 @@ def _secret(name: str) -> str:
     value = os.getenv(name, "")
     if value:
         return str(value).strip()
+    if st is None:
+        return ""
     try:
         value = st.secrets.get(name, "")
     except Exception:

@@ -283,3 +283,170 @@ calculation formulas, SAR logic, and map styling are unchanged.
 - `forecast_engine.py` reads Google Drive credentials from `os.environ` instead of calling `st.secrets` inside the subprocess.
 - This fixes `StreamlitSecretNotFoundError` caused by the engine subprocess looking for `secrets.toml` under the outputs working directory.
 - ECMWF retrieval, rainfall calculations, SAR logic, map styling, output naming, and UI behavior remain unchanged from V9.6.
+
+
+## V9.12 — status refresh, Drive preflight, Step 3 stall
+
+- `app.py` renders the status panel **inside** the 10-second fragment.
+  In V9.5-V9.11 the fragment rendered nothing, so the panel never refreshed
+  for viewers who did not press Run.
+- The fragment triggers one app-level rerun when a run finishes, so the Run
+  button, the cooldown notice and the maps update by themselves.
+- The session that pressed Run keeps the callback panel; the fragment panel is
+  skipped for that session, so exactly one status panel is shown.
+- Adds Thai text for the 12h / 6h / 3h product messages.
+- `forecast_engine.py` validates `GOOGLE_DRIVE_FOLDER_ID` and performs a Drive
+  preflight (`DRIVE_PREFLIGHT|OK|<folder name>`) during Step 1, instead of
+  raising after the downloads and all four product sets had already been built.
+- Natural Earth `admin_0_countries` (50m) and `admin_1_states_provinces` (10m)
+  are downloaded during Step 1 with timing logs (`DETAIL|STEP1|...`). These
+  downloads used to happen inside Step 3 with no log line and no timeout, which
+  is what made Step 3 appear frozen on a fresh Streamlit container.
+- `socket.setdefaulttimeout(180)` so no network call can block forever.
+- ECMWF retrieval, rainfall calculations, SAR logic, ground tracks, map styling,
+  colors, boundaries, labels, map dimensions and output filenames are unchanged.
+
+### Verification markers after deploy
+
+- `APP_VERSION|V9.12_STATUS_REFRESH_FIX`
+- `ENGINE_VERSION|V9.12_STEP3_PREFETCH_2026-09-03`
+- `DRIVE_PREFLIGHT|OK|PNG`
+- `DETAIL|STEP1|Country boundaries ready in ...s`
+- `DETAIL|STEP1|Province boundaries ready in ...s`
+
+If the logs still show `ENGINE_VERSION|V7_FINAL_FIX_2026-08-27`, the deployed
+`forecast_engine.py` is an older copy than this folder.
+
+
+## V9.13 — background run and watchdog
+
+The forecast job no longer runs inside the Streamlit script thread of the
+person who pressed Run.
+
+- `start_forecast()` validates the lock and cooldown, launches the engine and
+  returns immediately (measured at ~0.01 s). A background reader thread owns
+  the process for its whole life: it parses `STATUS|` lines, refreshes the
+  heartbeat, writes the final status and releases the lock.
+- Closing the tab, refreshing the page or a dropped websocket no longer
+  releases the lock while the engine is still working, and no longer leaves a
+  second run startable.
+- A watchdog thread terminates the engine when it has produced no output for
+  `ENGINE_SILENCE_KILL_MINUTES` (default 10) or has run longer than
+  `ENGINE_MAX_RUNTIME_MINUTES` (default 120), and records the reason in the
+  status file. Look for `WATCHDOG|KILL|...` in the logs. Both thresholds can be
+  overridden from Streamlit Secrets, for example:
+
+  ```toml
+  ENGINE_SILENCE_KILL_MINUTES = 20
+  ENGINE_MAX_RUNTIME_MINUTES = 150
+  ```
+- `_START_LOCK` prevents two sessions from starting a run in the same instant.
+- The engine PID is reaped by the reader thread, so a finished engine can no
+  longer linger as a zombie that `os.kill(pid, 0)` reports as alive.
+- `run_forecast()` is kept as an alias for `start_forecast()`.
+- The dashboard drops the per-session callback panel. The 10-second fragment
+  from V9.12 is now the only status panel, and it clears the Drive listing
+  cache and reruns the app once when a run finishes.
+- `forecast_engine.py` logs each rainfall subset load (`DETAIL|STEP3|Loading
+  ... subset into memory...`) so Step 3 no longer has a long silent stretch.
+- ECMWF retrieval, rainfall calculations, SAR logic, ground tracks, map
+  styling, colors, boundaries, labels, map dimensions and output filenames are
+  unchanged.
+
+### Verification markers after deploy
+
+- `APP_VERSION|V9.13_BACKGROUND_RUN`
+- `ENGINE_VERSION|V9.12_STEP3_PREFETCH_2026-09-03`
+
+
+## V9.14 — complete forecast sets only
+
+- `drive_reader.find_latest_forecast_set()` now prefers a **complete**
+  Day 1-Day 10 folder. The folder being written during a run is always the
+  newest one, so the previous behaviour ("first child folder that has any day
+  PNG") made the dashboard switch to a half-finished forecast the moment a run
+  created its folder - while the page was still telling the viewer it was
+  showing the last completed run.
+- If no complete folder exists yet, the most complete set is shown and the
+  dashboard says how many days are available, instead of pretending it is final.
+- The scan is bounded to the newest `MAX_FOLDERS_TO_INSPECT` (12) folders, so
+  a Drive with hundreds of run folders still costs a small, fixed number of
+  API calls.
+- Drive `modifiedTime` is displayed in ICT, matching the V9.3/V9.4 rule.
+
+### Verification markers after deploy
+
+- `APP_VERSION|V9.14_DRIVE_SET_COMPLETE`
+
+
+## V9.15 — no silent blocks, tighter watchdog
+
+The watchdog can only be as tight as the longest stretch during which a healthy
+engine says nothing. Two blocks were silent for minutes at a time, so they were
+made to report progress instead of loosening the threshold:
+
+- `_make_contact_sheet()` logs `DETAIL|SUMMARY|...` while opening the source
+  maps, while composing the sheet (including the pixel size of the canvas) and
+  before writing the file. Building the 3-hour sheet from 48 maps used to be one
+  silent block.
+- `_upload()` announces the file and its size **before** the upload starts, not
+  only after it finishes.
+
+With those in place the longest legitimate silence is a single large Drive
+upload, so:
+
+- `STALE_WARNING_MINUTES` 8 -> 5 (dashboard warning)
+- `ENGINE_SILENCE_KILL_MINUTES` 15 -> 10 (watchdog kill)
+- `ENGINE_MAX_RUNTIME_MINUTES` stays 120
+
+Raise them from Streamlit Secrets if a real run shows a longer honest gap.
+
+
+## V9.16 — two run modes
+
+The public Run button used to build all 118 maps (24h, 12h, 6h and 3h) while
+the dashboard displays only the ten 24-hour maps. The engine now takes a mode
+from the `FORECAST_MODE` environment variable.
+
+| | `dashboard` (default) | `full` |
+|---|---|---|
+| GRIB downloaded | 24h only, ~10 MB | all four, ~113 MB |
+| maps rendered | 10 | 118 |
+| contact sheets | 1 (2x5) | 4 (largest 2x24) |
+| Drive uploads | 11 | 122 |
+| used by | the Run button | the scheduled job |
+
+- `forecast_runner.start_forecast()` sets `FORECAST_MODE=dashboard`, so the
+  public button only ever builds what the dashboard shows.
+- In dashboard mode the engine stops right after the 24-hour products with
+  `STATUS|7|100`. It never opens the 12h/6h/3h GRIB files, so the 2x24 contact
+  sheet that composed 48 maps into one ~185 MB in-memory image - the main
+  out-of-memory risk on Streamlit Cloud - is not built there at all.
+- `forecast_engine.py` no longer imports Streamlit (it never used it) and
+  `drive_writer.py` treats Streamlit as optional, so the scheduled job can run
+  outside Streamlit.
+
+### Scheduled job
+
+`.github/workflows/ecmwf-full-products.yml` runs the full set once a day with
+`FORECAST_MODE=full` and uploads to the same Shared Drive folder.
+
+Before it will run:
+
+1. Move `.github/` to the **repository root** (a workflow file only runs from
+   there) and check that `working-directory` matches the app folder name.
+2. Add four repository secrets under *Settings -> Secrets and variables ->
+   Actions*: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`,
+   `GOOGLE_REFRESH_TOKEN`, `GOOGLE_DRIVE_FOLDER_ID`.
+3. Trigger it once by hand (*Actions -> ECMWF full products -> Run workflow*)
+   before trusting the schedule.
+
+The cron is `0 9 * * *` = 09:00 UTC = 16:00 ICT. GitHub cron times are always
+UTC.
+
+**Billing note:** a full run takes roughly 40-90 minutes. On a **private**
+repository that is about 1,200-2,700 Actions minutes a month against a 2,000
+minute free allowance, so a daily schedule may overrun it. On a **public**
+repository Actions minutes are free. Check which one this repository is before
+enabling the schedule; running every other day, or only on weekdays
+(`0 9 * * 1-5`), halves the cost.

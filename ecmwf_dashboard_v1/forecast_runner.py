@@ -5,6 +5,8 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
+import time
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -43,8 +45,37 @@ def _engine_env() -> dict:
 
 # A status is considered suspicious when no heartbeat has been received for
 # this long. It is a warning first; it does not automatically kill the job.
-STALE_WARNING_MINUTES = 8
+STALE_WARNING_MINUTES = 5
 STALE_LOCK_MINUTES = 45
+
+def _tunable(name: str, default: float) -> float:
+    """Read a threshold from Streamlit Secrets, then the environment."""
+    value = None
+    try:
+        value = st.secrets.get(name, None)
+    except Exception:
+        value = None
+    if value in (None, ""):
+        value = os.getenv(name)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+# The watchdog terminates an engine that has gone silent or overrun. Without
+# it a hung engine holds the lock until the Streamlit container is rebooted.
+#
+# Budget: V9.15 logs inside the contact-sheet build and before each Drive
+# upload, so the longest legitimate gap between two output lines is now a
+# single large upload (about 1-2 minutes). Warn at 5 minutes, kill at 10.
+# Both thresholds can be overridden in Streamlit Secrets without code changes.
+ENGINE_SILENCE_KILL_MINUTES = _tunable("ENGINE_SILENCE_KILL_MINUTES", 10)
+ENGINE_MAX_RUNTIME_MINUTES = _tunable("ENGINE_MAX_RUNTIME_MINUTES", 120)
+WATCHDOG_POLL_SECONDS = 20
+
+# Guards start_forecast() against two sessions starting a run at the same time.
+_START_LOCK = threading.Lock()
 
 
 def _pid_is_alive(pid) -> bool:
@@ -350,77 +381,57 @@ def clear_stale_lock_if_safe() -> bool:
     )
     return True
 
-def run_forecast(callback: Callable | None = None):
-    """
-    Run one forecast job only with sequence validation and heartbeat tracking.
-    """
-    # Recover only an obviously stale lock.
-    clear_stale_lock_if_safe()
-
-    if LOCK_FILE.exists():
-        raise RuntimeError("ระบบกำลังประมวลผลข้อมูลอยู่")
-
-    if LAST_RUN_FILE.exists():
-        try:
-            last_run = datetime.fromisoformat(
-                LAST_RUN_FILE.read_text(encoding="utf-8").strip()
-            )
-            elapsed = _now_dt() - last_run
-            cooldown = timedelta(minutes=COOLDOWN_MINUTES)
-            if elapsed < cooldown:
-                remaining = cooldown - elapsed
-                total_seconds = max(0, int(remaining.total_seconds()))
-                minutes, seconds = divmod(total_seconds, 60)
-                raise RuntimeError(
-                    f"สามารถดำเนินการประมวลผลครั้งถัดไปได้ใน "
-                    f"{minutes} นาที {seconds} วินาที"
-                )
-        except ValueError:
-            pass
-
-    LOCK_FILE.write_text(str(os.getpid()), encoding="utf-8")
-
-    # New run: reset previous status cleanly.
-    _write_status(
-        running=True,
-        step=1,
-        progress=1,
-        message="เริ่มต้นกระบวนการประมวลผล",
-        error=None,
-        health="normal",
-        anomaly=None,
-        detail="กำลังเริ่มต้นระบบ",
-        preserve_started_at=False,
-    )
-
-    process = None
-
+def _heartbeat_age_seconds() -> float | None:
+    status = _read_status()
+    stamp = status.get("heartbeat_at") or status.get("updated_at")
+    if not stamp:
+        return None
     try:
-        if not ENGINE_FILE.exists():
-            raise FileNotFoundError(
-                "ไม่พบ forecast_engine.py สำหรับดำเนินการประมวลผล"
+        return max(0.0, (_now_dt() - datetime.fromisoformat(stamp)).total_seconds())
+    except Exception:
+        return None
+
+
+def _engine_watchdog(process: subprocess.Popen, started_at: datetime, state: dict):
+    """Terminate an engine that stopped reporting or overran the time budget."""
+    while process.poll() is None:
+        time.sleep(WATCHDOG_POLL_SECONDS)
+        if process.poll() is not None:
+            return
+
+        reason = None
+        age = _heartbeat_age_seconds()
+        runtime = (_now_dt() - started_at).total_seconds()
+
+        if age is not None and age > ENGINE_SILENCE_KILL_MINUTES * 60:
+            reason = (
+                f"ไม่พบสัญญาณจากระบบประมวลผลนานกว่า "
+                f"{ENGINE_SILENCE_KILL_MINUTES} นาที ระบบจึงหยุดงานนี้"
+            )
+        elif runtime > ENGINE_MAX_RUNTIME_MINUTES * 60:
+            reason = (
+                f"ใช้เวลาประมวลผลเกิน {ENGINE_MAX_RUNTIME_MINUTES} นาที "
+                "ระบบจึงหยุดงานนี้"
             )
 
-        _notify(callback, 1, 5, "Preparing system...")
+        if reason:
+            state["kill_reason"] = reason
+            print(f"WATCHDOG|KILL|{reason}", flush=True)
+            try:
+                process.kill()
+            except Exception:
+                pass
+            return
 
-        env = _engine_env()
-        env["DASHBOARD_OUTPUT_DIR"] = str(OUTPUT_DIR)
 
-        process = subprocess.Popen(
-            [sys.executable, "-u", str(ENGINE_FILE)],
-            cwd=str(ROOT),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            env=env,
-        )
+def _engine_reader(process: subprocess.Popen, state: dict):
+    """Own the engine process for its whole life, independent of any session.
 
-        # Save actual child process PID.
-        status = _read_status()
-        status["engine_pid"] = process.pid
-        _write_payload(status)
-
+    This runs in a background thread. Previously the same loop ran inside the
+    Streamlit script thread of whoever pressed Run, so closing that browser tab
+    released the lock while the engine was still working.
+    """
+    try:
         assert process.stdout is not None
 
         for raw_line in process.stdout:
@@ -438,11 +449,12 @@ def run_forecast(callback: Callable | None = None):
                         progress = int(parts[2])
                     except ValueError:
                         continue
-                    message = parts[3]
-                    _notify(callback, step, progress, message)
+                    _notify(None, step, progress, parts[3])
 
         code = process.wait()
 
+        if state.get("kill_reason"):
+            raise RuntimeError(state["kill_reason"])
         if code != 0:
             raise RuntimeError(f"Forecast engine exited with code {code}.")
 
@@ -473,10 +485,134 @@ def run_forecast(callback: Callable | None = None):
             ),
             detail=previous.get("detail"),
         )
-        raise
 
     finally:
+        try:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=10)
+        except Exception:
+            pass
         LOCK_FILE.unlink(missing_ok=True)
+
+
+def _check_cooldown():
+    if not LAST_RUN_FILE.exists():
+        return
+    try:
+        last_run = datetime.fromisoformat(
+            LAST_RUN_FILE.read_text(encoding="utf-8").strip()
+        )
+    except ValueError:
+        return
+
+    elapsed = _now_dt() - last_run
+    cooldown = timedelta(minutes=COOLDOWN_MINUTES)
+    if elapsed >= cooldown:
+        return
+
+    total_seconds = max(0, int((cooldown - elapsed).total_seconds()))
+    minutes, seconds = divmod(total_seconds, 60)
+    raise RuntimeError(
+        f"สามารถดำเนินการประมวลผลครั้งถัดไปได้ใน "
+        f"{minutes} นาที {seconds} วินาที"
+    )
+
+
+def start_forecast() -> int:
+    """Start one forecast job and return immediately with the engine PID.
+
+    The caller's Streamlit script run is not held open. A background reader
+    thread owns the engine process, updates the status file and releases the
+    lock, so the job survives page refreshes and disconnected viewers.
+    """
+    with _START_LOCK:
+        # Recover only an obviously stale lock.
+        clear_stale_lock_if_safe()
+
+        if LOCK_FILE.exists():
+            raise RuntimeError("ระบบกำลังประมวลผลข้อมูลอยู่")
+
+        _check_cooldown()
+
+        if not ENGINE_FILE.exists():
+            raise FileNotFoundError(
+                "ไม่พบ forecast_engine.py สำหรับดำเนินการประมวลผล"
+            )
+
+        # st.secrets must be read here, in the Streamlit script thread.
+        env = _engine_env()
+        env["DASHBOARD_OUTPUT_DIR"] = str(OUTPUT_DIR)
+        # The public button builds only what the dashboard displays.
+        # The 12h/6h/3h products come from the scheduled FORECAST_MODE=full job.
+        env["FORECAST_MODE"] = "dashboard"
+
+        LOCK_FILE.write_text(str(os.getpid()), encoding="utf-8")
+
+        # New run: reset previous status cleanly.
+        _write_status(
+            running=True,
+            step=1,
+            progress=1,
+            message="เริ่มต้นกระบวนการประมวลผล",
+            error=None,
+            health="normal",
+            anomaly=None,
+            detail="กำลังเริ่มต้นระบบ",
+            engine_pid=None,
+            preserve_started_at=False,
+        )
+
+        try:
+            process = subprocess.Popen(
+                [sys.executable, "-u", str(ENGINE_FILE)],
+                cwd=str(ROOT),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                env=env,
+            )
+        except Exception as exc:
+            LOCK_FILE.unlink(missing_ok=True)
+            _write_status(
+                running=False,
+                step=1,
+                progress=0,
+                message="ไม่สามารถเริ่มกระบวนการประมวลผลได้",
+                error=str(exc),
+                health="error",
+                anomaly="ไม่สามารถเปิดกระบวนการประมวลผลได้",
+            )
+            raise
+
+        # Save actual child process PID.
+        status = _read_status()
+        status["engine_pid"] = process.pid
+        _write_payload(status)
+
+        _notify(None, 1, 5, "Preparing system...")
+
+        state: dict = {"kill_reason": None}
+        threading.Thread(
+            target=_engine_reader,
+            args=(process, state),
+            name="forecast-engine-reader",
+            daemon=True,
+        ).start()
+        threading.Thread(
+            target=_engine_watchdog,
+            args=(process, _now_dt(), state),
+            name="forecast-engine-watchdog",
+            daemon=True,
+        ).start()
+
+        return process.pid
+
+
+def run_forecast(callback: Callable | None = None) -> int:
+    """Backward-compatible alias. The job no longer blocks the caller."""
+    return start_forecast()
 
 
 def get_latest_day_images() -> dict[str, Path]:

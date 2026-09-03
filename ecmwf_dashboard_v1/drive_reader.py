@@ -12,6 +12,14 @@ from googleapiclient.http import MediaIoBaseDownload
 DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive"
 FOLDER_MIME = "application/vnd.google-apps.folder"
 
+# A finished run folder holds Day 1 to Day 10.
+EXPECTED_DAYS = 10
+
+# The run folder being written is always the newest one, so during a run the
+# newest folder is incomplete. Look past it, but keep the number of Drive
+# calls bounded.
+MAX_FOLDERS_TO_INSPECT = 12
+
 
 def _secret(name: str) -> str:
     value = st.secrets.get(name, "")
@@ -115,17 +123,31 @@ def find_latest_forecast_set() -> Tuple[Optional[dict], Dict[int, dict]]:
 
     # First: allow root itself to contain the PNG files.
     root_files = _day_pngs_in_folder(root_id)
-    if root_files:
+    if len(root_files) >= EXPECTED_DAYS:
         return None, root_files
 
-    # Otherwise inspect newest child folders until a forecast set is found.
+    # Otherwise inspect newest child folders. Prefer a complete Day 1-Day 10
+    # set: the newest folder is the one currently being written during a run,
+    # and returning it would show a half-finished forecast as the latest one.
     children = _list_children(root_id)
     folders = [x for x in children if x.get("mimeType") == FOLDER_MIME]
 
-    for folder in folders:
+    best_folder = None
+    best_files: Dict[int, dict] = {}
+
+    for folder in folders[:MAX_FOLDERS_TO_INSPECT]:
         day_files = _day_pngs_in_folder(folder["id"])
-        if day_files:
-            return folder, day_files
+        if len(day_files) >= EXPECTED_DAYS:
+            return dict(folder, complete=True), day_files
+        if len(day_files) > len(best_files):
+            best_folder, best_files = folder, day_files
+
+    # No complete run folder found. Show the most complete thing available so
+    # the page is not empty before the first run has ever finished.
+    if root_files and len(root_files) >= len(best_files):
+        return None, root_files
+    if best_files:
+        return dict(best_folder, complete=False), best_files
 
     return None, {}
 

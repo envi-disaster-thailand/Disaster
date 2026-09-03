@@ -2,15 +2,12 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-import streamlit as st
 from drive_writer import ensure_run_folder, upload_file
 
 import matplotlib
 matplotlib.use("Agg")
 
-print("ENGINE_VERSION|V7_FINAL_FIX_2026-08-27", flush=True)
-
-ENGINE_VERSION = "V7_FINAL_FIX_2026-08-27"
+ENGINE_VERSION = "V9.12_STEP3_PREFETCH_2026-09-03"
 print(f"ENGINE_VERSION|{ENGINE_VERSION}", flush=True)
 
 
@@ -33,6 +30,50 @@ print(
     ),
     flush=True,
 )
+
+# Two run modes.
+#   dashboard (default) - only the Day 1-Day 10 24-hour products the public
+#                         dashboard actually displays: 10 maps, one summary.
+#   full                - every 24h / 12h / 6h / 3h product, for the scheduled
+#                         job. 118 maps; not for the public Run button.
+RUN_MODE = (os.getenv("FORECAST_MODE") or "dashboard").strip().lower()
+FULL_PRODUCTS = RUN_MODE == "full"
+print(f"RUN_MODE|{'full' if FULL_PRODUCTS else 'dashboard'}", flush=True)
+
+import socket
+
+# No network call in this engine may block forever. Cartopy's Natural Earth
+# downloader and urllib both fall back to the default socket timeout.
+socket.setdefaulttimeout(180)
+
+# Fail fast on Drive misconfiguration. This used to be checked only after the
+# GRIB downloads and the whole 24h/12h/6h/3h processing had already run.
+DRIVE_PNG_PARENT_ID = str(os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "")).strip()
+if not DRIVE_PNG_PARENT_ID:
+    raise RuntimeError(
+        "GOOGLE_DRIVE_FOLDER_ID is missing. It must point to the existing PNG folder."
+    )
+
+
+def _drive_preflight(parent_id: str) -> None:
+    """Confirm the OAuth credentials can actually reach the destination folder."""
+    from drive_writer import get_drive_write_service
+
+    service = get_drive_write_service()
+    meta = service.files().get(
+        fileId=parent_id,
+        fields="id,name",
+        supportsAllDrives=True,
+    ).execute()
+    print(f"DRIVE_PREFLIGHT|OK|{meta.get('name', '')}", flush=True)
+
+
+try:
+    _drive_preflight(DRIVE_PNG_PARENT_ID)
+except Exception as _drive_exc:
+    raise RuntimeError(
+        f"Google Drive preflight failed before processing started: {_drive_exc}"
+    ) from _drive_exc
 
 import os, warnings
 warnings.filterwarnings('ignore')
@@ -150,6 +191,31 @@ SHARED_DRIVE_PATH = (
 
 
 
+# Natural Earth shapefiles were previously downloaded inside Step 3, with no
+# log line and no timeout. On a fresh Streamlit container that download is the
+# longest silent wait of the whole run. Fetch it here instead, where it is
+# visible in the logs and cannot be mistaken for a stalled Step 3.
+status(1, 8, "Preparing map boundary data...")
+
+import time as _time
+
+def _prefetch_natural_earth(resolution, name, label):
+    print(f"DETAIL|STEP1|Fetching {label} boundaries ({resolution})...", flush=True)
+    _t0 = _time.time()
+    path = shpreader.natural_earth(
+        resolution=resolution, category='cultural', name=name)
+    print(
+        f"DETAIL|STEP1|{label} boundaries ready in {_time.time() - _t0:.1f}s",
+        flush=True,
+    )
+    return path
+
+NE_COUNTRIES_SHP = _prefetch_natural_earth(
+    '50m', 'admin_0_countries', 'Country')
+NE_PROVINCES_SHP = _prefetch_natural_earth(
+    '10m', 'admin_1_states_provinces', 'Province')
+
+
 status(2, 15, "Downloading ECMWF forecast...")
 
 # @title
@@ -171,32 +237,36 @@ print(f'Model run (UTC)  : {run_utc:%Y-%m-%d %H:%M}')
 print(f'Model run (ICT)  : {run_ict:%Y-%m-%d %H:%M} Local Time')
 print(f'24h file size    : {os.path.getsize(GRIB_FILE_24H)/1e6:.1f} MB')
 
-print('\nDownloading 12-hour steps (12h to 240h)...')
-client.retrieve(
-    type='fc',
-    param='tp',
-    step=STEPS_12H,
-    target=GRIB_FILE_12H,
-)
-print(f'12h file size    : {os.path.getsize(GRIB_FILE_12H)/1e6:.1f} MB')
+if FULL_PRODUCTS:
+    print('\nDownloading 12-hour steps (12h to 240h)...')
+    client.retrieve(
+        type='fc',
+        param='tp',
+        step=STEPS_12H,
+        target=GRIB_FILE_12H,
+    )
+    print(f'12h file size    : {os.path.getsize(GRIB_FILE_12H)/1e6:.1f} MB')
 
-print('\nDownloading 6-hour steps (6h to 240h)...')
-client.retrieve(
-    type='fc',
-    param='tp',
-    step=STEPS_6H,
-    target=GRIB_FILE_6H,
-)
-print(f'6h file size     : {os.path.getsize(GRIB_FILE_6H)/1e6:.1f} MB')
+    print('\nDownloading 6-hour steps (6h to 240h)...')
+    client.retrieve(
+        type='fc',
+        param='tp',
+        step=STEPS_6H,
+        target=GRIB_FILE_6H,
+    )
+    print(f'6h file size     : {os.path.getsize(GRIB_FILE_6H)/1e6:.1f} MB')
 
-print('\nDownloading 3-hour steps (3h to 144h)...')
-client.retrieve(
-    type='fc',
-    param='tp',
-    step=STEPS_3H,
-    target=GRIB_FILE_3H,
-)
-print(f'3h file size     : {os.path.getsize(GRIB_FILE_3H)/1e6:.1f} MB')
+    print('\nDownloading 3-hour steps (3h to 144h)...')
+    client.retrieve(
+        type='fc',
+        param='tp',
+        step=STEPS_3H,
+        target=GRIB_FILE_3H,
+    )
+    print(f'3h file size     : {os.path.getsize(GRIB_FILE_3H)/1e6:.1f} MB')
+else:
+    print('\nDashboard mode: 12h, 6h and 3h downloads skipped '
+          '(about 100 MB and several minutes saved).')
 
 
 status(3, 30, "Reading and preparing rainfall data...")
@@ -233,9 +303,10 @@ def to_hours(v, fb):
 
 print("DETAIL|STEP3|Starting GRIB decoding for 24h, 12h, 6h and 3h datasets...", flush=True)
 da_24h, sdim_24h = load_grib(GRIB_FILE_24H, "24h")
-da_12h, sdim_12h = load_grib(GRIB_FILE_12H, "12h")
-da_6h,  sdim_6h  = load_grib(GRIB_FILE_6H, "6h")
-da_3h,  sdim_3h  = load_grib(GRIB_FILE_3H, "3h")
+if FULL_PRODUCTS:
+    da_12h, sdim_12h = load_grib(GRIB_FILE_12H, "12h")
+    da_6h,  sdim_6h  = load_grib(GRIB_FILE_6H, "6h")
+    da_3h,  sdim_3h  = load_grib(GRIB_FILE_3H, "3h")
 print("DETAIL|STEP3|All GRIB datasets opened successfully; preparing coordinate grids...", flush=True)
 
 lats  = da_24h.latitude.values
@@ -244,25 +315,37 @@ lon2d, lat2d = np.meshgrid(lons, lats)
 
 hours_24h = [to_hours(s, STEPS_24H[i])
              for i, s in enumerate(da_24h[sdim_24h].values)]
-hours_12h = [to_hours(s, STEPS_12H[i])
-             for i, s in enumerate(da_12h[sdim_12h].values)]
-hours_6h  = [to_hours(s, STEPS_6H[i])
-             for i, s in enumerate(da_6h[sdim_6h].values)]
-hours_3h  = [to_hours(s, STEPS_3H[i])
-             for i, s in enumerate(da_3h[sdim_3h].values)]
-
 print(f'24h steps : {hours_24h}')
-print(f'12h steps : {hours_12h}')
-print(f'6h steps  : {hours_6h}')
-print(f'3h steps  : {hours_3h}')
+
+if FULL_PRODUCTS:
+    hours_12h = [to_hours(s, STEPS_12H[i])
+                 for i, s in enumerate(da_12h[sdim_12h].values)]
+    hours_6h  = [to_hours(s, STEPS_6H[i])
+                 for i, s in enumerate(da_6h[sdim_6h].values)]
+    hours_3h  = [to_hours(s, STEPS_3H[i])
+                 for i, s in enumerate(da_3h[sdim_3h].values)]
+
+    print(f'12h steps : {hours_12h}')
+    print(f'6h steps  : {hours_6h}')
+    print(f'3h steps  : {hours_3h}')
 
 
 # Streamlit adaptation: materialize Thailand subsets, then remove temporary
 # GRIB files before map rendering to release local disk.
-for _da in (da_24h, da_12h, da_6h, da_3h):
-    _da.load()
+_datasets = [("24h", da_24h)]
+if FULL_PRODUCTS:
+    _datasets += [("12h", da_12h), ("6h", da_6h), ("3h", da_3h)]
 
-for _grib in (GRIB_FILE_24H, GRIB_FILE_12H, GRIB_FILE_6H, GRIB_FILE_3H):
+for _label, _da in _datasets:
+    print(f"DETAIL|STEP3|Loading {_label} subset into memory...", flush=True)
+    _da.load()
+print("DETAIL|STEP3|All rainfall subsets loaded.", flush=True)
+
+_gribs = [GRIB_FILE_24H]
+if FULL_PRODUCTS:
+    _gribs += [GRIB_FILE_12H, GRIB_FILE_6H, GRIB_FILE_3H]
+
+for _grib in _gribs:
     try:
         Path(_grib).unlink()
         print(f"[cleanup] Removed temporary GRIB: {_grib}", flush=True)
@@ -271,8 +354,7 @@ for _grib in (GRIB_FILE_24H, GRIB_FILE_12H, GRIB_FILE_6H, GRIB_FILE_3H):
 
 
 
-shpfile = shpreader.natural_earth(
-    resolution='50m', category='cultural', name='admin_0_countries')
+shpfile = NE_COUNTRIES_SHP
 reader_c = shpreader.Reader(shpfile)
 
 thailand_geom = None
@@ -287,9 +369,7 @@ for rec in reader_c.records():
           LAT_MIN - 5 <= lat_c <= LAT_MAX + 5):
         neighbor_geoms.append(rec.geometry)
 
-shp_adm1 = shpreader.natural_earth(
-    resolution='10m', category='cultural',
-    name='admin_1_states_provinces')
+shp_adm1 = NE_PROVINCES_SHP
 reader_adm1 = shpreader.Reader(shp_adm1)
 province_geoms = [
     rec.geometry for rec in reader_adm1.records()
@@ -1000,12 +1080,7 @@ print('Helper functions ready.')
 # Preserve the original Shared Drive structure:
 # New-Disaster-Water/Colab_ECMWF_Export/PNG/YYYY-MM-DD_HHMM_ICT
 
-DRIVE_PNG_PARENT_ID = str(os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "")).strip()
-if not DRIVE_PNG_PARENT_ID:
-    raise RuntimeError(
-        "GOOGLE_DRIVE_FOLDER_ID is missing. It must point to the existing PNG folder."
-    )
-
+# DRIVE_PNG_PARENT_ID is set and preflighted during startup, above.
 RUN_FOLDER_NAME = run_ict.strftime("%Y-%m-%d_%H%M_ICT")
 RUN_FOLDER_ID = ensure_run_folder(DRIVE_PNG_PARENT_ID, RUN_FOLDER_NAME)
 print(f"Shared Drive run folder ready: {RUN_FOLDER_NAME}", flush=True)
@@ -1013,6 +1088,11 @@ print(f"Shared Drive run folder ready: {RUN_FOLDER_NAME}", flush=True)
 
 def _upload(path, remove_after=False):
     p = Path(path)
+    try:
+        _size_mb = p.stat().st_size / 1e6
+    except OSError:
+        _size_mb = 0.0
+    print(f"[drive] Uploading: {p.name} ({_size_mb:.1f} MB)", flush=True)
     upload_file(p, RUN_FOLDER_ID)
     print(f"[drive] Uploaded: {p.name}", flush=True)
     if remove_after:
@@ -1042,7 +1122,18 @@ def _make_contact_sheet(image_files, output_name, ncols=2, margin=18):
     if not files:
         return
 
-    imgs = [Image.open(f).convert("RGB") for f in files]
+    print(
+        f"DETAIL|SUMMARY|{output_name}: building from {len(files)} maps...",
+        flush=True,
+    )
+    imgs = []
+    for _i, _f in enumerate(files, 1):
+        imgs.append(Image.open(_f).convert("RGB"))
+        if _i % 10 == 0 or _i == len(files):
+            print(
+                f"DETAIL|SUMMARY|{output_name}: loaded {_i}/{len(files)} maps",
+                flush=True,
+            )
     max_w = max(im.width for im in imgs)
     max_h = max(im.height for im in imgs)
     nrows = (len(imgs) + ncols - 1) // ncols
@@ -1056,12 +1147,23 @@ def _make_contact_sheet(image_files, output_name, ncols=2, margin=18):
         "white",
     )
 
+    print(
+        f"DETAIL|SUMMARY|{output_name}: composing {ncols}x{nrows} sheet "
+        f"({canvas.width}x{canvas.height} px)...",
+        flush=True,
+    )
     for i, im in enumerate(imgs):
         r, c = divmod(i, ncols)
         x = margin + c * max_w + (max_w - im.width) // 2
         y = margin + r * max_h + (max_h - im.height) // 2
         canvas.paste(im, (x, y))
+        if (i + 1) % 10 == 0 or (i + 1) == len(imgs):
+            print(
+                f"DETAIL|SUMMARY|{output_name}: placed {i + 1}/{len(imgs)}",
+                flush=True,
+            )
 
+    print(f"DETAIL|SUMMARY|{output_name}: writing file...", flush=True)
     canvas.save(output_name, dpi=(150, 150))
     for im in imgs:
         im.close()
@@ -1155,6 +1257,16 @@ for _p in panels_24h:
     except FileNotFoundError:
         pass
 
+
+
+if not FULL_PRODUCTS:
+    print(
+        "RUN_MODE|dashboard: 12h, 6h and 3h products skipped. "
+        "The scheduled job builds them with FORECAST_MODE=full.",
+        flush=True,
+    )
+    status(7, 100, "Processing completed.")
+    raise SystemExit(0)
 
 
 status(6, 88, "Generating additional 12-hour products...")

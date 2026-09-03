@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import streamlit as st
-print("APP_VERSION|V9.11_DRIVE_ENV_FIX", flush=True)
+print("APP_VERSION|V9.14_DRIVE_SET_COMPLETE", flush=True)
 
 from forecast_runner import (
     STATUS_FILE,
@@ -15,7 +15,7 @@ from forecast_runner import (
     LAST_RUN_FILE,
     COOLDOWN_MINUTES,
     STALE_WARNING_MINUTES,
-    run_forecast,
+    start_forecast,
     get_latest_day_images,
     status_health,
     clear_stale_lock_if_safe,
@@ -111,7 +111,11 @@ def format_ict(dt_text):
     if not dt_text:
         return "-"
     try:
-        dt = datetime.fromisoformat(str(dt_text))
+        text = str(dt_text).strip()
+        # Google Drive returns RFC 3339 with a trailing Z.
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        dt = datetime.fromisoformat(text)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=UTC)
         return dt.astimezone(ICT).strftime("%Y-%m-%d %H:%M:%S ICT")
@@ -173,6 +177,10 @@ def _thai_message(message: str | None) -> str | None:
         "Loading satellite acquisition plans...": "กำลังนำเข้าข้อมูลแผนการถ่ายภาพดาวเทียม",
         "Computing satellite ground tracks...": "กำลังคำนวณแนวการเคลื่อนที่ภาคพื้นดินของดาวเทียม",
         "Processing 24-hour accumulated rainfall...": "กำลังคำนวณปริมาณฝนสะสม 24 ชั่วโมง",
+        "Generating additional 12-hour products...": "กำลังจัดทำผลผลิตเพิ่มเติมช่วง 12 ชั่วโมง",
+        "Generating additional 6-hour products...": "กำลังจัดทำผลผลิตเพิ่มเติมช่วง 6 ชั่วโมง",
+        "Generating additional 3-hour products...": "กำลังจัดทำผลผลิตเพิ่มเติมช่วง 3 ชั่วโมง",
+        "Preparing map boundary data...": "กำลังเตรียมข้อมูลขอบเขตแผนที่",
         "Processing completed.": "ประมวลผลข้อมูลเสร็จสมบูรณ์",
     }
     if message in translations:
@@ -326,10 +334,16 @@ def display_private_drive_maps() -> bool:
         st.error(f"ไม่สามารถดาวน์โหลดภาพจาก Google Drive ได้: {exc}")
         return False
 
+    if folder and folder.get("complete") is False:
+        st.info(
+            f"ชุดข้อมูลล่าสุดยังจัดทำไม่ครบ Day 1–Day 10 "
+            f"(ขณะนี้มี {len(files)} วัน) ระบบแสดงเท่าที่จัดทำแล้ว"
+        )
+
     if folder:
         st.caption(
             f"ชุดข้อมูลที่กำลังแสดง: {folder.get('name','')} "
-            f"• ปรับปรุง {folder.get('modifiedTime','')}"
+            f"• ปรับปรุง {format_ict(folder.get('modifiedTime',''))}"
         )
     return True
 
@@ -342,12 +356,32 @@ st.markdown(
 
 
 @st.fragment(run_every="10s")
-def status_auto_refresh():
-    """Check process status every 10 seconds without adding visible dashboard text."""
+def status_panel_auto_refresh():
+    """Render the single status panel and refresh it every 10 seconds.
+
+    The panel must live inside the fragment. A fragment rerun only re-executes
+    the fragment body, so a panel drawn outside it never updates for viewers
+    who did not press Run.
+    """
     current = load_status()
     active = bool(current.get("running")) or LOCK_FILE.exists()
-    if active:
-        _ = status_health(current)
+
+    was_active = st.session_state.get("_status_was_active")
+    st.session_state["_status_was_active"] = active
+
+    if (
+        active
+        or int(current.get("progress", 0) or 0) > 0
+        or current.get("error")
+        or current.get("anomaly")
+    ):
+        render_status(current)
+
+    # A finished run changes the Run button, the cooldown notice and the maps,
+    # all of which live outside this fragment.
+    if was_active and not active:
+        clear_drive_cache()
+        st.rerun(scope="app")
 
 # Recover only a clearly stale (>45 min) lock.
 clear_stale_lock_if_safe()
@@ -391,40 +425,29 @@ with right:
         st.caption("สามารถดำเนินการประมวลผลได้โดยไม่ต้องเข้าสู่ระบบ")
 
 
+# Report a start that was refused (lock or cooldown), once.
+_start_error = st.session_state.pop("_start_error", None)
+if _start_error:
+    st.error(f"ไม่สามารถเริ่มการประมวลผลได้: {_start_error}")
+
+
 # ONE status panel only. It is visible to every viewer, not only the person
-# who pressed Run.
-if (
-    is_running
-    or status.get("progress", 0) > 0
-    or status.get("error")
-    or status.get("anomaly")
-):
-    render_status(status)
+# who pressed Run, and it refreshes itself every 10 seconds.
+status_panel_auto_refresh()
 
 
 if run_clicked:
-    status_area = st.empty()
-
-    def callback(step: int, progress: int, message: str):
-        # Update the same conceptual status panel during this session.
-        # The persistent status file lets other users see the same state.
-        with status_area.container():
-            render_status(load_status())
-
+    # start_forecast() returns as soon as the engine is running. The job is
+    # owned by a background thread, so it survives this page being closed.
     try:
-        run_forecast(callback=callback)
-        clear_drive_cache()
-        st.success("ประมวลผลข้อมูลเสร็จสมบูรณ์")
-        time.sleep(0.5)
-        st.rerun()
+        start_forecast()
     except Exception as exc:
-        st.error(f"เกิดข้อผิดพลาดในการประมวลผล: {exc}")
-        time.sleep(0.5)
-        st.rerun()
+        st.session_state["_start_error"] = str(exc)
+    time.sleep(0.5)
+    st.rerun()
 
 
 st.divider()
-status_auto_refresh()
 
 st.header("ปริมาณฝนสะสม 24 ชั่วโมง")
 
