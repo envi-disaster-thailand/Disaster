@@ -235,3 +235,11 @@ only for the specific LinearRing/closed-linestring exception.
 - Keeps V9.1 stale-state recovery and V9 PID checks.
 - Does not modify `forecast_engine.py`, ECMWF retrieval, rainfall calculations,
   SAR logic, map styling, colors, boundaries, labels, or map dimensions.
+
+
+## V9.3 — ICT display
+- Status timestamps are displayed in Thailand time (`Asia/Bangkok`, ICT/UTC+7).
+- Internal timestamps remain unchanged for heartbeat, cooldown, lock, and stale-state calculations.
+- Keeps V9.2 atomic status writes and V9.1 stale recovery.
+- Does not modify `forecast_engine.py`, ECMWF retrieval, rainfall calculations,
+  SAR logic, map styling, colors, boundaries, labels, or map dimensions.

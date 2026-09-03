@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 import time
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import streamlit as st
-print("APP_VERSION|V9.2_ATOMIC_STATUS", flush=True)
+print("APP_VERSION|V9.3_ICT_DISPLAY", flush=True)
 
 from forecast_runner import (
     STATUS_FILE,
@@ -61,6 +62,22 @@ STEPS = [
     "บันทึกผลการประมวลผล",
 ]
 
+
+
+ICT = ZoneInfo("Asia/Bangkok")
+UTC = ZoneInfo("UTC")
+
+def format_ict(dt_text):
+    """Convert stored UTC/ISO status timestamps to Thailand ICT for display only."""
+    if not dt_text:
+        return "-"
+    try:
+        dt = datetime.fromisoformat(str(dt_text))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return dt.astimezone(ICT).strftime("%Y-%m-%d %H:%M:%S ICT")
+    except Exception:
+        return str(dt_text)
 
 def load_status() -> dict:
     if not STATUS_FILE.exists():
