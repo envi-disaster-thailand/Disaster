@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import streamlit as st
-print("APP_VERSION|V9.4_GREEN_BUTTON", flush=True)
+print("APP_VERSION|V9.5_STATUS_REFRESH", flush=True)
 
 from forecast_runner import (
     STATUS_FILE,
@@ -35,20 +35,27 @@ st.set_page_config(
 )
 st.markdown("""
 <style>
-div[data-testid="stButton"] > button[kind="primary"] {
+div[data-testid="stButton"] > button[kind="primary"]:not(:disabled) {
     background-color: #2E7D5B !important;
     border-color: #2E7D5B !important;
     color: #FFFFFF !important;
 }
-div[data-testid="stButton"] > button[kind="primary"]:hover {
+div[data-testid="stButton"] > button[kind="primary"]:not(:disabled):hover {
     background-color: #25684B !important;
     border-color: #25684B !important;
     color: #FFFFFF !important;
 }
-div[data-testid="stButton"] > button[kind="primary"]:focus {
+div[data-testid="stButton"] > button[kind="primary"]:not(:disabled):focus {
     background-color: #2E7D5B !important;
     border-color: #2E7D5B !important;
     color: #FFFFFF !important;
+}
+div[data-testid="stButton"] > button[kind="primary"]:disabled {
+    background-color: #F0F2F6 !important;
+    border-color: #D9DDE3 !important;
+    color: #A3A8B0 !important;
+    opacity: 1 !important;
+    cursor: not-allowed !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -310,6 +317,20 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+
+@st.fragment(run_every="10s")
+def status_auto_refresh():
+    """Refresh process-status data every 10 seconds while a forecast run is active."""
+    current = load_status()
+    active = bool(current.get("running")) or LOCK_FILE.exists()
+    if active:
+        # Reading these values on each fragment tick keeps Streamlit's status
+        # view synchronized without starting another forecast process.
+        _ = status_health(current)
+        st.caption("สถานะระบบตรวจสอบอัตโนมัติทุก 10 วินาที")
+    else:
+        st.caption("สถานะระบบพร้อมใช้งาน")
+
 # Recover only a clearly stale (>45 min) lock.
 clear_stale_lock_if_safe()
 
@@ -385,6 +406,8 @@ if run_clicked:
 
 
 st.divider()
+status_auto_refresh()
+
 st.header("ปริมาณฝนสะสม 24 ชั่วโมง")
 
 # Make it explicit when maps are from the previous completed run.

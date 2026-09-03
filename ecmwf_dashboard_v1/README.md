@@ -255,3 +255,12 @@ only for the specific LinearRing/closed-linestring exception.
 Adds diagnostic log checkpoints only around the existing Step 3 GRIB opens/selections.
 Look for `DETAIL|STEP3|...` in Streamlit Logs. The ECMWF requests, rainfall
 calculation formulas, SAR logic, and map styling are unchanged.
+
+
+## V9.5 — 10-second status refresh
+- Adds a Streamlit fragment that checks process status every 10 seconds.
+- The refresh is status/UI-only; it does not start a second forecast run.
+- Existing lock/cooldown protection remains unchanged.
+- Ready Run button remains green; disabled/running button remains gray.
+- ICT display and Step 3 diagnostic logs remain included.
+- `forecast_engine.py` and `forecast_runner.py` are unchanged.
