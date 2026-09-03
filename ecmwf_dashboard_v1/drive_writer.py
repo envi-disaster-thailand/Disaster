@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import mimetypes
+import os
 from pathlib import Path
 
 import streamlit as st
@@ -12,7 +13,15 @@ DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
 
 
 def _secret(name: str) -> str:
-    value = st.secrets.get(name, "")
+    # forecast_engine.py runs as a subprocess. Environment variables are the
+    # primary source there; Streamlit Secrets remain a fallback for app-side use.
+    value = os.getenv(name, "")
+    if value:
+        return str(value).strip()
+    try:
+        value = st.secrets.get(name, "")
+    except Exception:
+        value = ""
     return "" if value is None else str(value).strip()
 
 
@@ -25,7 +34,7 @@ def get_drive_write_service():
     )
     missing = [k for k in required if not _secret(k)]
     if missing:
-        raise RuntimeError(f"Missing Streamlit Secrets: {', '.join(missing)}")
+        raise RuntimeError(f"Missing Google Drive credentials: {', '.join(missing)}")
 
     creds = Credentials(
         token=None,
