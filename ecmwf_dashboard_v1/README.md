@@ -114,3 +114,108 @@ Configure these only in Google Cloud secret/environment settings:
 The service account must have permission to the destination Shared Drive/folder.
 
 If Drive credentials are not configured, the forecast still runs and keeps outputs locally; upload is skipped.
+
+
+## V4 — Private Google Drive display
+
+The dashboard can now read the latest Day 1-Day 10 24-hour PNG products
+from a private Google Drive folder using OAuth credentials stored only in
+Streamlit Secrets.
+
+Required root-level Streamlit Secrets:
+
+```toml
+GOOGLE_CLIENT_ID = "..."
+GOOGLE_CLIENT_SECRET = "..."
+GOOGLE_REFRESH_TOKEN = "..."
+GOOGLE_DRIVE_FOLDER_ID = "..."
+```
+
+The public dashboard never exposes a Google Drive link. The Drive remains private.
+
+The folder ID can point directly to a folder containing the Day PNGs, or to a
+parent folder containing dated run folders. The dashboard selects the newest
+child folder that contains files matching `day1` ... `day10`.
+
+
+## V5 — Original notebook engine
+
+`forecast_engine.py` in this version is rebuilt directly from the supplied
+original notebook:
+
+`ecmwf_thailand_rainfall_forecast_with_Satellite_aoi_by_toon20060706(1).ipynb`
+
+Preserved from the notebook:
+- ECMWF Open Data retrieval and forecast steps
+- GRIB reading and precipitation calculations
+- Natural Earth Thailand/country/province boundaries
+- GISTDA SAR acquisition-plan retrieval
+- ESA Sentinel-1 fallback logic
+- TLE/SGP4 ground-track logic
+- original `draw_panel()` map rendering
+- original 24h/12h/6h/3h products
+
+Dashboard-only changes:
+- status messages
+- server output directory
+- individual map products are used to build summary contact sheets, avoiding
+  the Streamlit Cloud Cartopy/Gridliner multi-panel GEOSException
+- Google Drive remains read-only with the currently authorized OAuth scope
+- local Day 1-Day 10 products take precedence immediately after a web run
+
+
+## V6 — Shared Drive streaming
+
+- Original ECMWF/SAR/ground-track logic and original PNG rendering are retained.
+- `GOOGLE_DRIVE_FOLDER_ID` points to the existing
+  `New-Disaster-Water/Colab_ECMWF_Export/PNG` folder.
+- Each run creates/reuses `YYYY-MM-DD_HHMM_ICT`.
+- Every 3h, 6h, 12h and 24h PNG is uploaded to that run folder.
+- All four summary PNGs are uploaded too.
+- Temporary GRIB and PNG files are deleted from Streamlit after use.
+- Dashboard displays only `ecmwf-24hr-day1` through `day10`.
+
+OAuth must be regenerated with:
+`https://www.googleapis.com/auth/drive`
+
+
+## Refresh-token migration
+
+The included `get_refresh_token.py` now requests:
+
+`https://www.googleapis.com/auth/drive`
+
+Run it on the same Windows machine where `client_secret.json` is stored.
+Then replace only `GOOGLE_REFRESH_TOKEN` in Streamlit Secrets.
+
+Do not commit `client_secret.json`, client secrets, or refresh tokens to GitHub.
+
+
+## V7 final verification markers
+
+After Streamlit reboot, the logs must show:
+
+- `APP_VERSION|V7_FINAL_FIX`
+- after starting a run: `ENGINE_VERSION|V7_FINAL_FIX_2026-08-27`
+- `Shared Drive run folder ready: YYYY-MM-DD_HHMM_ICT`
+- `Export helper ready (Shared Drive streaming mode).`
+
+If the log instead shows `server-side Google Drive credentials`, Streamlit is
+still executing an older `forecast_engine.py`.
+
+V7 retains the original daily map rendering. The Cartopy fix explicitly closes
+the rectangular map boundary used by the existing extent and adds a save retry
+only for the specific LinearRing/closed-linestring exception.
+
+
+## V8 — Process sequence and health monitoring
+
+- One status panel only.
+- Status is visible to every viewer, not only the user who pressed Run.
+- Validates step order and non-decreasing progress.
+- Heartbeat is refreshed from every forecast-engine log line.
+- Warns after 8 minutes without a heartbeat.
+- Detects an obviously stale lock after 45 minutes and can clear it conservatively.
+- Shows plain Thai messages for normal / warning / error process states.
+- While a new run is processing, the map is explicitly identified as the
+  previous completed forecast run.
