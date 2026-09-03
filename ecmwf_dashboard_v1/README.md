@@ -291,3 +291,11 @@ calculation formulas, SAR logic, and map styling are unchanged.
 - Adds immediate `DETAIL|STEP3A|...` lines directly after entering Step 3.
 - Logs existence and file size for all four downloaded GRIB inputs before decoding.
 - Does not change ECMWF retrieval, rainfall formula, SAR logic, map styling, or output naming.
+
+
+## V9.9 — Runner/Engine Diagnostic
+- Runner logs the exact Python executable, engine path, engine SHA256, working directory, and file existence before spawning.
+- Engine logs its own running file path, Python executable, working directory, SHA256, and version at startup.
+- Step 3 now emits ordered `CHECKPOINT|STEP3|...` markers before file inspection and before each GRIB decode call.
+- Keeps V9.8 timeout/retry protection.
+- Does not change ECMWF requests, rainfall calculations, SAR logic, generated map styling, or output filenames.
