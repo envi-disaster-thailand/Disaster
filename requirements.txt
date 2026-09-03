@@ -1,13 +1,13 @@
-streamlit>=1.42
-numpy
-scipy
-xarray
+streamlit==1.62.0
+numpy==2.2.6
+scipy==1.15.3
+xarray==2025.12.0
 cfgrib
-eccodes
+eccodes==2.41.0
 ecmwf-opendata
-matplotlib
-cartopy
-shapely
+matplotlib==3.10.9
+cartopy==0.24.1
+shapely==2.0.7
 requests
 skyfield
 google-api-python-client
@@ -17,4 +17,6 @@ google-auth-oauthlib
 
 sgp4
 
-Pillow
+Pillow==11.3.0
+pandas==2.3.3
+pyarrow==24.0.0
